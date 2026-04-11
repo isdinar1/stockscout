@@ -933,207 +933,168 @@ def analyze(symbol, theme, direction, ch, mc=0):
         'closes':         ch.get('closes', []),
     }
 
+# ── Per-stock news fetch ──────────────────────────────────────────────────────
+
+def fetch_stock_news(symbol, company_name=''):
+    """Fetch recent news headlines for a specific stock symbol."""
+    headlines = []
+    seen = set()
+    queries = [f'${symbol} stock', f'{company_name} stock' if company_name else symbol]
+    for q in queries[:2]:
+        enc = urllib.parse.quote(q)
+        text = fetch_text(f'https://news.google.com/rss/search?q={enc}&hl=en-US&gl=US&ceid=US:en')
+        if not text:
+            continue
+        try:
+            root = ET.fromstring(text)
+            for item in root.findall('.//item'):
+                t = htmllib.unescape(item.findtext('title', '')).strip()
+                if t and t not in seen and len(t) > 15:
+                    seen.add(t)
+                    headlines.append(t)
+        except Exception:
+            pass
+    return headlines[:8]
+
+POS_WORDS = ['beat','surge','rally','growth','record','strong','upgrade','buy','bullish',
+             'profit','revenue','gains','rises','jumps','soars','outperform','positive']
+NEG_WORDS = ['miss','fall','decline','cut','downgrade','sell','weak','loss','bearish',
+             'drops','slides','plunges','warning','risk','concern','lawsuit','investigation']
+
+def news_sentiment(headlines):
+    """Returns (score -30..+30, supporting_headlines[])"""
+    pos, neg, supporting = 0, 0, []
+    for h in headlines:
+        hl = h.lower()
+        p = sum(1 for w in POS_WORDS if w in hl)
+        n = sum(1 for w in NEG_WORDS if w in hl)
+        if p > n:
+            pos += 1
+            supporting.append(h)
+        elif n > p:
+            neg += 1
+    return min(30, (pos - neg) * 8), supporting[:3]
+
 # ── Main research pipeline ────────────────────────────────────────────────────
 
 def run_research():
-    print('\n📰 Fetching news...')
-    news = get_news()
+    # ── Step 1: Fetch congress trades (our starting point) ────────────────────
+    print('\n🏛️  Fetching Congress trades...')
+    congress_data = get_congress_trades(max_ptrs=40)
 
-    if not news:
-        print('  [warn] No news fetched — using fallback themes')
-        active_themes = [(THEMES[0], []), (THEMES[8], [])]
-    else:
-        active_themes = detect_themes(news)
+    # Get stocks congress is BUYING, sorted by number of distinct buyers
+    buy_stocks = []
+    for sym, trades in congress_data.items():
+        buyers = [t for t in trades if t['type'] == 'Buy']
+        if buyers:
+            buy_stocks.append((sym, buyers))
+    buy_stocks.sort(key=lambda x: len({t['name'] for t in x[1]}), reverse=True)
+    print(f'  → {len(buy_stocks)} stocks being bought by Congress')
 
-    if not active_themes:
-        active_themes = [(THEMES[0], [])]
+    if not buy_stocks:
+        print('  [warn] No congress trades found')
+        buy_stocks = []
 
-    # ── Collect ALL (symbol, theme, direction) combos ─────────────────────────
-    # A symbol can appear in multiple themes — keep all assignments
-    symbol_assignments = []  # list of (sym, theme, direction)
-    seen_pairs = set()
-    for theme, _ in active_themes:
-        for direction, sector_ids in [('up', theme.get('up',[])), ('down', theme.get('down',[]))]:
-            for sid in sector_ids:
-                for sym in SECTORS.get(sid, []):
-                    key = (sym, theme['id'])
-                    if key not in seen_pairs:
-                        seen_pairs.add(key)
-                        symbol_assignments.append((sym, theme, direction))
+    # Take top 15 congress-bought stocks
+    top_congress = buy_stocks[:15]
+    congress_symbols = [s for s, _ in top_congress]
 
-    # Unique symbols for batch fetch
-    all_symbols = list({sym for sym, _, _ in symbol_assignments})
-    print(f'  → Batch-fetching {len(all_symbols)} symbols via yfinance...')
+    # ── Step 2: Fetch price data for all congress-bought stocks ───────────────
+    print(f'  → Fetching price data for {len(congress_symbols)} stocks...')
+    chart_cache = batch_fetch(congress_symbols) if congress_symbols else {}
 
-    # ── Single batch fetch for all price/technical data ───────────────────────
-    chart_cache = batch_fetch(all_symbols)
-    print(f'  → Got data for {len(chart_cache)} symbols')
+    # ── Step 3: Enrich with company name + market cap ─────────────────────────
+    enriched = enrich_top(congress_symbols)
 
-    # ── Score all (sym, theme, direction) combos ─────────────────────────────
-    all_scored = []
-    for sym, theme, direction in symbol_assignments:
+    # ── Step 4: For each stock, fetch news and score ───────────────────────────
+    print('  → Fetching news for each stock...')
+    results = []
+    for sym, buyers in top_congress:
         ch = chart_cache.get(sym)
         if not ch:
             continue
-        r = analyze(sym, theme, direction, ch, mc=0)
-        if r:
-            r['_theme'] = theme
-            all_scored.append(r)
 
-    # ── Fetch Congress trading data FIRST (in background) ────────────────────
-    import threading
-    congress_data = {}
-    def _fetch_congress():
-        nonlocal congress_data
-        congress_data = get_congress_trades(max_ptrs=40)
-    ct = threading.Thread(target=_fetch_congress, daemon=True)
-    ct.start()
-    ct.join(timeout=90)  # wait for congress before enriching
+        e          = enriched.get(sym, {})
+        mc         = e.get('mc', 0)
+        comp_name  = e.get('name', sym)
+        price      = ch.get('price', 0)
+        closes     = ch.get('closes', [])
+        w52        = ch.get('w52', 0.5)
+        rsi        = ch.get('rsi', 50)
+        chg5       = ch.get('chg5', 0)
+        vol_r      = ch.get('vol_r', 1)
 
-    # ── Enrich top scorers with name + market cap ─────────────────────────────
-    all_scored.sort(key=lambda x: -x['score'])
-
-    # Also include any congress-traded symbols so we can fetch their prices
-    congress_buy_tickers = [sym for sym, trades in congress_data.items()
-                            if any(t['type'] == 'Buy' for t in trades)]
-
-    top_syms = list({r['symbol'] for r in all_scored[:50]} | set(congress_buy_tickers[:20]))
-    print(f'  → Enriching top {len(top_syms)} picks with name/market cap...')
-    enriched = enrich_top(top_syms)
-
-    for r in all_scored:
-        if r['symbol'] in enriched:
-            e  = enriched[r['symbol']]
-            mc = e.get('mc', 0)
-            r['name']     = e.get('name', r['symbol'])
-            r['capLabel'] = cap_label(mc)
-            r['stats']['cap'] = fmt_mc(mc) if mc else 'N/A'
-            if mc and mc > 60e9:
-                r['score'] = 0  # demote mega caps
-
-    # ── Annotate scored stocks with congress trades ───────────────────────────
-    for r in all_scored:
-        sym    = r['symbol']
-        trades = congress_data.get(sym, [])
-        r['congressTrades'] = trades
-        if trades:
-            buys = sum(1 for t in trades if t['type'] == 'Buy')
-            if buys >= 2: r['score'] = min(100, r['score'] + 10)
-            elif buys == 1: r['score'] = min(100, r['score'] + 5)
-
-    all_scored.sort(key=lambda x: -x['score'])
-
-    # ── Group by theme, pick top per theme ────────────────────────────────────
-    output = []
-    used_syms = set()
-    for theme, matching_headlines in active_themes:
-        theme_stocks_raw = [
-            r for r in all_scored
-            if r.get('_theme', {}).get('id') == theme['id'] and r['symbol'] not in used_syms
-        ][:6]
-
-        if not theme_stocks_raw:
-            continue
-
-        theme_stocks = []
-        for r in theme_stocks_raw:
-            used_syms.add(r['symbol'])
-            arrow = '↑' if r['direction']=='up' else '↓'
-            print(f'    {arrow} {r["symbol"]:6s} score={r["score"]:2d} [{r["capLabel"]}]')
-            clean = {k: v for k, v in r.items() if not k.startswith('_')}
-            theme_stocks.append(clean)
-
-        output.append({
-            'themeId':    theme['id'],
-            'themeIcon':  theme['icon'],
-            'themeTitle': theme['title'],
-            'themeLogic': theme['logic'],
-            'headlines':  [h['title'] for h in matching_headlines[:2]],
-            'stocks':     theme_stocks,
-        })
-
-    # ── Add "Congress is Buying" theme from actual congress trade data ─────────
-    # Congress members buy large caps (AAPL, TSLA etc) — different from our sectors.
-    # This section shows exactly what congress bought, with their photos attached.
-    congress_stocks = []
-    congress_buy_syms = [(sym, trades) for sym, trades in congress_data.items()
-                         if any(t['type'] == 'Buy' for t in trades)
-                         and sym not in used_syms]
-    # Sort by number of distinct buyers
-    congress_buy_syms.sort(key=lambda x: len({t['name'] for t in x[1] if t['type']=='Buy'}), reverse=True)
-
-    # Fetch price data for top congress-bought symbols we don't already have
-    new_cong_syms = [s for s, _ in congress_buy_syms[:12] if s not in chart_cache]
-    if new_cong_syms:
-        extra_cache = batch_fetch(new_cong_syms)
-        chart_cache.update(extra_cache)
-
-    for sym, trades in congress_buy_syms[:10]:
-        ch = chart_cache.get(sym)
-        if not ch: continue
-        buyers = [t for t in trades if t['type'] == 'Buy']
         buyer_names = list({t['name'] for t in buyers})
-        e = enriched.get(sym, {})
-        mc = e.get('mc', 0)
-        price = ch.get('price', 0)
-        closes = ch.get('closes', [])
-        chg5 = ch.get('chg5', 0)
-        pct_chg = round(((closes[-1]-closes[0])/closes[0]*100) if len(closes)>1 else 0, 1)
-        used_syms.add(sym)
-        congress_stocks.append({
-            'symbol': sym,
-            'name': e.get('name', sym),
-            'price': price,
-            'target': None, 'upsidePct': None,
-            'score': min(100, 50 + len(buyers) * 8),
-            'signal': 'Strong Setup' if len(buyers) >= 2 else 'Worth Watching',
-            'capLabel': cap_label(mc),
-            'why': f"{'Multiple members' if len(buyer_names)>1 else buyer_names[0]} recently purchased ${sym} — Congress members must file trades within 45 days under the STOCK Act.",
-            'direction': 'up',
-            'closes': closes,
+        n_buyers    = len(buyer_names)
+
+        # Fetch news specific to this stock
+        headlines = fetch_stock_news(sym, comp_name)
+        news_score, supporting_headlines = news_sentiment(headlines)
+
+        # Score: congress signal + news sentiment + technicals
+        score = 40
+        score += min(30, n_buyers * 10)   # up to 30 pts for multiple buyers
+        score += news_score                # -30..+30 based on news
+        if w52 < 0.35: score += 10        # near 52w low = more upside
+        if rsi < 45:   score += 8         # oversold
+        if vol_r > 1.5: score += 5        # volume picking up
+        if chg5 < -5:  score += 6         # pulled back recently = entry point
+        score = max(0, min(100, score))
+
+        if   score >= 74: signal = 'Strong Setup'
+        elif score >= 58: signal = 'Worth Watching'
+        else:             signal = 'On Radar'
+
+        # Build why text
+        names_str = ', '.join(buyer_names[:3])
+        if len(buyer_names) > 3:
+            names_str += f' +{len(buyer_names)-3} more'
+        why = f'{names_str} {"have" if n_buyers > 1 else "has"} recently bought ${sym}'
+        if supporting_headlines:
+            why += f'. News supports the trade: "{supporting_headlines[0][:100]}"'
+        elif news_score < 0:
+            why += '. Recent news is mixed — watch carefully before entering.'
+        else:
+            why += '. No major negative news found.'
+
+        all_trades = congress_data.get(sym, [])
+
+        print(f'    🏛️ {sym:6s} score={score:2d} buyers=[{", ".join(buyer_names[:2])}]')
+
+        results.append({
+            'symbol':        sym,
+            'name':          comp_name,
+            'price':         price,
+            'target':        None,
+            'upsidePct':     None,
+            'score':         score,
+            'signal':        signal,
+            'capLabel':      cap_label(mc),
+            'why':           why,
+            'direction':     'up',
+            'closes':        closes,
             'stats': {
-                '52w pos': f'{int(ch.get("w52",0)*100)}%',
-                'RSI': str(ch.get('rsi', 0)),
-                '5d': f'{chg5:+.1f}%',
-                'cap': fmt_mc(mc) if mc else 'N/A',
+                '52w pos':   f'{int(w52*100)}%',
+                'RSI':       str(rsi),
+                '5d':        f'{chg5:+.1f}%',
+                'cap':       fmt_mc(mc) if mc else 'N/A',
+                'vol':       f'{vol_r:.1f}x' if vol_r > 1.2 else 'normal',
             },
-            'congressTrades': trades,
-        })
-        print(f'    🏛️ {sym:6s} buyers={len(buyers)} [{", ".join(buyer_names[:2])}]')
-
-    if congress_stocks:
-        output.append({
-            'themeId':    'congress_buying',
-            'themeIcon':  '🏛️',
-            'themeTitle': 'Congress Is Buying',
-            'themeLogic': 'Stocks recently purchased by members of Congress, disclosed under the STOCK Act. '
-                          'Members must report trades within 45 days. Multiple buyers = stronger signal.',
-            'headlines':  [],
-            'stocks':     congress_stocks,
+            'congressTrades': all_trades,
+            'supportingNews': supporting_headlines,
         })
 
-    # Guarantee at least 10 total stocks — backfill from high scorers not yet shown
-    total = sum(len(g['stocks']) for g in output)
-    if total < 10 and all_scored:
-        needed = 10 - total
-        extras = [r for r in all_scored if r['symbol'] not in used_syms][:needed]
-        if extras and output:
-            for r in extras:
-                used_syms.add(r['symbol'])
-                clean = {k: v for k, v in r.items() if not k.startswith('_')}
-                output[0]['stocks'].append(clean)
-        elif extras:
-            clean_extras = []
-            for r in extras:
-                used_syms.add(r['symbol'])
-                clean_extras.append({k: v for k, v in r.items() if not k.startswith('_')})
-            output.append({
-                'themeId': 'top_picks', 'themeIcon': '📊',
-                'themeTitle': 'Top Picks', 'themeLogic': 'Highest scoring opportunities right now.',
-                'headlines': [], 'stocks': clean_extras,
-            })
+    results.sort(key=lambda x: -x['score'])
 
-    return output
+    return [{
+        'themeId':    'congress_buying',
+        'themeIcon':  '🏛️',
+        'themeTitle': 'Congress Is Buying — Backed by News',
+        'themeLogic': 'These are stocks recently purchased by members of Congress (STOCK Act disclosures), '
+                      'ranked by how many members are buying and whether current news supports the trade.',
+        'headlines':  [],
+        'stocks':     results,
+    }]
 
 # ── HTTP server ───────────────────────────────────────────────────────────────
 

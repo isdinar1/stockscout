@@ -246,35 +246,28 @@ function sparkline(closes, id) {
     </div>`;
 }
 
-function congressBadge(trades) {
-  if (!trades || !trades.length) return '';
-  const buyers  = trades.filter(t => t.type === 'Buy');
-  const sellers = trades.filter(t => t.type === 'Sell');
-  if (buyers.length) {
-    const names = [...new Set(buyers.map(t => t.name))].slice(0, 2).join(', ');
-    const extra = buyers.length > 2 ? ` +${buyers.length - 2} more` : '';
-    return `<span class="congress-badge">🏛️ ${names}${extra} buying</span>`;
-  } else if (sellers.length) {
-    const names = [...new Set(sellers.map(t => t.name))].slice(0, 2).join(', ');
-    return `<span class="congress-badge" style="background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.25);color:#fca5a5">🏛️ ${names} selling</span>`;
-  }
-  return '';
-}
-
 function congressHtml(trades) {
   if (!trades || !trades.length) return '';
-  const rows = trades.slice(0, 5).map(t => {
+  const rows = trades.slice(0, 6).map(t => {
     const cls = t.type === 'Buy' ? 'congress-type-buy' : 'congress-type-sell';
     return `<div class="congress-row">
       <span class="congress-name">🏛️ ${t.name}</span>
       <span class="${cls}">${t.type === 'Buy' ? '▲ BUY' : '▼ SELL'}</span>
-      <span class="congress-date">${t.date}</span>
+      <span class="congress-date">${t.date || ''}</span>
     </div>`;
   }).join('');
   return `<div class="congress-box">
     <div class="congress-hd">🏛️ Congressional Trades</div>
     ${rows}
   </div>`;
+}
+
+function supportingNewsHtml(headlines) {
+  if (!headlines || !headlines.length) return '';
+  const items = headlines.map(h =>
+    `<div class="news-item">📰 ${h.slice(0, 120)}${h.length > 120 ? '…' : ''}</div>`
+  ).join('');
+  return `<div class="news-list">${items}</div>`;
 }
 
 function render(themes) {
@@ -330,13 +323,14 @@ function render(themes) {
                 <div class="price-line">${priceStr}</div>
                 <span class="cap-tag">${s.capLabel}</span>
                 ${dir}
-                ${congressBadge(s.congressTrades)}
               </div>
             </div>
             <span class="signal ${sc}">${s.signal}</span>
           </div>
 
           ${sparkline(s.closes, cardIdx)}
+
+          ${congressHtml(s.congressTrades)}
 
           <div class="bar-row">
             <span class="bar-lbl">Confidence</span>
@@ -345,11 +339,11 @@ function render(themes) {
           </div>
 
           <div class="why">
-            <div class="why-hd">Why this story moves this stock</div>
+            <div class="why-hd">Why this is a buy</div>
             <div class="why-body">${s.why}</div>
           </div>
 
-          ${congressHtml(s.congressTrades)}
+          ${supportingNewsHtml(s.supportingNews)}
 
           <div class="stats">${statHtml}</div>
         </div>`;
