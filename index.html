@@ -113,14 +113,18 @@
     .chart-labels span { color:var(--muted); font-size:.65rem; }
     .congress-box { background:rgba(168,85,247,.07); border:1px solid rgba(168,85,247,.22); border-radius:8px; padding:10px 14px; margin-bottom:12px; }
     .congress-hd { color:#a78bfa; font-size:.65rem; font-weight:700; letter-spacing:.08em; text-transform:uppercase; margin-bottom:8px; }
-    .congress-row { display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid rgba(168,85,247,.1); }
+    .congress-row { display:flex; align-items:center; gap:9px; padding:6px 0; border-bottom:1px solid rgba(168,85,247,.1); }
     .congress-row:last-child { border-bottom:none; }
     .congress-name { color:#c4b5fd; font-size:.78rem; font-weight:600; flex:1; }
     .congress-type-buy  { background:rgba(16,185,129,.15); color:var(--g2); border-radius:4px; font-size:.65rem; font-weight:800; padding:2px 7px; }
     .congress-type-sell { background:rgba(239,68,68,.12);  color:#fca5a5;   border-radius:4px; font-size:.65rem; font-weight:800; padding:2px 7px; }
     .congress-date { color:var(--muted); font-size:.68rem; }
     .congress-banner { background:rgba(168,85,247,.07); border:1px solid rgba(168,85,247,.18); border-radius:10px; padding:10px 16px; margin:16px 0 0; display:flex; align-items:center; gap:10px; font-size:.8rem; color:#c4b5fd; }
-    .congress-badge { display:inline-flex; align-items:center; gap:4px; background:rgba(168,85,247,.12); border:1px solid rgba(168,85,247,.3); border-radius:5px; color:#c4b5fd; font-size:.67rem; font-weight:700; padding:2px 8px; margin-top:4px; white-space:nowrap; }
+    .congress-badge { display:inline-flex; align-items:center; gap:5px; background:rgba(168,85,247,.12); border:1px solid rgba(168,85,247,.3); border-radius:20px; color:#c4b5fd; font-size:.67rem; font-weight:700; padding:2px 8px 2px 3px; margin-top:4px; white-space:nowrap; }
+    .congress-avatar { width:20px; height:20px; border-radius:50%; object-fit:cover; border:1px solid rgba(168,85,247,.4); background:#1c2a40; flex-shrink:0; }
+    .congress-avatar-sm { width:28px; height:28px; border-radius:50%; object-fit:cover; border:1px solid rgba(168,85,247,.35); background:#1c2a40; flex-shrink:0; }
+    .congress-avatar-placeholder { width:20px; height:20px; border-radius:50%; background:rgba(168,85,247,.25); display:inline-flex; align-items:center; justify-content:center; font-size:.6rem; color:#c4b5fd; flex-shrink:0; }
+    .congress-avatar-placeholder-sm { width:28px; height:28px; border-radius:50%; background:rgba(168,85,247,.2); display:inline-flex; align-items:center; justify-content:center; font-size:.75rem; flex-shrink:0; }
     .disc { color:var(--muted); font-size:.7rem; margin-top:24px; text-align:center; line-height:1.75; }
   </style>
 </head>
@@ -246,26 +250,40 @@ function sparkline(closes, id) {
     </div>`;
 }
 
+function avatarImg(trade, cls) {
+  const initials = (trade.name || '?').split(' ').map(w => w[0]).slice(0,2).join('');
+  if (trade.photo) {
+    return `<img src="${trade.photo}" class="${cls}" alt="${trade.name}"
+              onerror="this.style.display='none';this.nextSibling.style.display='inline-flex'">
+            <span class="${cls.replace('avatar','avatar-placeholder')}" style="display:none">${initials}</span>`;
+  }
+  return `<span class="${cls.replace('avatar','avatar-placeholder')}">${initials}</span>`;
+}
+
 function congressBadge(trades) {
   if (!trades || !trades.length) return '';
-  const buyers = trades.filter(t => t.type === 'Buy').map(t => t.name);
-  const sellers = trades.filter(t => t.type === 'Sell').map(t => t.name);
-  let out = '';
+  const buyers  = trades.filter(t => t.type === 'Buy');
+  const sellers = trades.filter(t => t.type === 'Sell');
+
   if (buyers.length) {
-    // Show first 2 buyers, abbreviate to first+last name initials if long
-    const names = buyers.slice(0, 2).map(n => {
-      const parts = n.trim().split(' ');
-      return parts.length >= 2 ? `${parts[0]} ${parts[parts.length-1]}` : n;
-    });
-    out += `<span class="congress-badge">🏛️ ${names.join(', ')} buying</span>`;
+    const shown = buyers.slice(0, 2);
+    const avatars = shown.map(t => avatarImg(t, 'congress-avatar')).join('');
+    const nameStr = shown.map(t => {
+      const p = t.name.trim().split(' ');
+      return p.length >= 2 ? `${p[0]} ${p[p.length-1]}` : t.name;
+    }).join(', ');
+    const extra = buyers.length > 2 ? ` +${buyers.length - 2}` : '';
+    return `<span class="congress-badge">${avatars}<span>🏛️ ${nameStr}${extra} buying</span></span>`;
   } else if (sellers.length) {
-    const names = sellers.slice(0, 2).map(n => {
-      const parts = n.trim().split(' ');
-      return parts.length >= 2 ? `${parts[0]} ${parts[parts.length-1]}` : n;
-    });
-    out += `<span class="congress-badge" style="background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.25);color:#fca5a5">🏛️ ${names.join(', ')} selling</span>`;
+    const shown = sellers.slice(0, 2);
+    const avatars = shown.map(t => avatarImg(t, 'congress-avatar')).join('');
+    const nameStr = shown.map(t => {
+      const p = t.name.trim().split(' ');
+      return p.length >= 2 ? `${p[0]} ${p[p.length-1]}` : t.name;
+    }).join(', ');
+    return `<span class="congress-badge" style="background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.25);color:#fca5a5">${avatars}<span>🏛️ ${nameStr} selling</span></span>`;
   }
-  return out;
+  return '';
 }
 
 function congressHtml(trades) {
@@ -273,7 +291,8 @@ function congressHtml(trades) {
   const rows = trades.slice(0, 5).map(t => {
     const cls = t.type === 'Buy' ? 'congress-type-buy' : 'congress-type-sell';
     return `<div class="congress-row">
-      <span class="congress-name">🏛️ ${t.name}</span>
+      ${avatarImg(t, 'congress-avatar-sm')}
+      <span class="congress-name">${t.name}</span>
       <span class="${cls}">${t.type === 'Buy' ? '▲ BUY' : '▼ SELL'}</span>
       <span class="congress-date">${t.date}</span>
     </div>`;

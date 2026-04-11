@@ -367,9 +367,68 @@ def fetch_text(url):
         print(f'  [fetch_text] {url[:70]}… → {e}')
         return ''
 
+# ── Congress member photo lookup ──────────────────────────────────────────────
+
+_legislators_cache = None
+_legislators_ts    = 0
+
+def get_legislators_map():
+    """Fetch current legislators JSON → {normalized_name: bioguide_id}. Cached 24h."""
+    global _legislators_cache, _legislators_ts
+    if _legislators_cache is not None and time.time() - _legislators_ts < 86400:
+        return _legislators_cache
+    try:
+        req = urllib.request.Request(
+            'https://theunitedstates.io/congress-legislators/legislators-current.json',
+            headers={'User-Agent': UA}
+        )
+        with urllib.request.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+        mapping = {}
+        for leg in data:
+            bio_id = leg.get('id', {}).get('bioguide', '')
+            if not bio_id:
+                continue
+            n = leg.get('name', {})
+            first = n.get('first', '')
+            last  = n.get('last', '')
+            full  = n.get('official_full', f'{first} {last}')
+            for key in [full.lower(), f'{first} {last}'.lower(), f'{last}, {first}'.lower()]:
+                if key.strip():
+                    mapping[key.strip()] = bio_id
+        _legislators_cache = mapping
+        _legislators_ts    = time.time()
+        print(f'  [legislators] loaded {len(mapping)} name entries')
+        return mapping
+    except Exception as e:
+        print(f'  [legislators] fetch failed: {e}')
+        _legislators_cache = {}
+        return {}
+
+def member_photo_url(name, leg_map):
+    """Return theunitedstates.io photo URL for a congress member name, or ''."""
+    if not leg_map or not name:
+        return ''
+    nl = name.lower().strip()
+    if nl in leg_map:
+        return f'https://theunitedstates.io/images/congress/225x275/{leg_map[nl]}.jpg'
+    parts = nl.split()
+    if len(parts) >= 2:
+        # Try "Last, First" and reversed
+        for attempt in [f'{parts[-1]}, {parts[0]}', f'{parts[0]} {parts[-1]}',
+                         f'{" ".join(parts[1:])} {parts[0]}']:
+            if attempt in leg_map:
+                return f'https://theunitedstates.io/images/congress/225x275/{leg_map[attempt]}.jpg'
+        # Last-name-only fallback
+        last = parts[-1]
+        for key, bio_id in leg_map.items():
+            if key.split()[-1] == last or key.startswith(last + ','):
+                return f'https://theunitedstates.io/images/congress/225x275/{bio_id}.jpg'
+    return ''
+
 # ── Congress trading data ─────────────────────────────────────────────────────
 
-_congress_cache = None   # {ticker: [{name, date, type, amount}, ...]}
+_congress_cache = None   # {ticker: [{name, date, type, amount, photo}, ...]}
 _congress_ts    = 0
 
 TICKER_IN_PDF = re.compile(r'\(([A-Z]{1,6})\)')  # matches "(NFLX)" style tickers in PDFs
@@ -442,9 +501,12 @@ def get_congress_trades(max_ptrs=40):
     ptrs = ptrs[:max_ptrs]
     print(f'  [congress] Fetching {len(ptrs)} recent PTR PDFs...')
 
+    leg_map = get_legislators_map()
+
     ticker_trades = {}
     for last, first, doc_id, filed in ptrs:
         member = f'{first} {last}'
+        photo  = member_photo_url(member, leg_map)
         try:
             req2 = urllib.request.Request(
                 f'https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/{doc_id}.pdf',
@@ -453,6 +515,7 @@ def get_congress_trades(max_ptrs=40):
             with urllib.request.urlopen(req2, timeout=15) as r2:
                 pdf_bytes = r2.read()
             for trade in _parse_ptr_pdf(pdf_bytes, member):
+                trade['photo'] = photo
                 tk = trade['ticker']
                 if tk not in ticker_trades:
                     ticker_trades[tk] = []
@@ -866,7 +929,7 @@ def run_research():
 
     # ── Enrich top scorers with name + market cap ─────────────────────────────
     all_scored.sort(key=lambda x: -x['score'])
-    top_syms = list({r['symbol'] for r in all_scored[:25]})
+    top_syms = list({r['symbol'] for r in all_scored[:50]})
     print(f'  → Enriching top {len(top_syms)} picks with name/market cap...')
     enriched = enrich_top(top_syms)
     for r in all_scored:
@@ -905,7 +968,7 @@ def run_research():
         theme_stocks_raw = [
             r for r in all_scored
             if r.get('_theme', {}).get('id') == theme['id'] and r['symbol'] not in used_syms
-        ][:4]
+        ][:6]  # up to 6 per theme
 
         if not theme_stocks_raw:
             continue
@@ -927,6 +990,28 @@ def run_research():
             'headlines':  [h['title'] for h in matching_headlines[:2]],
             'stocks':     theme_stocks,
         })
+
+    # Guarantee at least 10 total stocks — backfill from high scorers not yet shown
+    total = sum(len(g['stocks']) for g in output)
+    if total < 10 and all_scored:
+        needed = 10 - total
+        extras = [r for r in all_scored if r['symbol'] not in used_syms][:needed]
+        if extras and output:
+            for r in extras:
+                used_syms.add(r['symbol'])
+                clean = {k: v for k, v in r.items() if not k.startswith('_')}
+                output[0]['stocks'].append(clean)
+        elif extras:
+            # No themes at all — make a catch-all group
+            clean_extras = []
+            for r in extras:
+                used_syms.add(r['symbol'])
+                clean_extras.append({k: v for k, v in r.items() if not k.startswith('_')})
+            output.append({
+                'themeId': 'top_picks', 'themeIcon': '📊',
+                'themeTitle': 'Top Picks', 'themeLogic': 'Highest scoring opportunities right now.',
+                'headlines': [], 'stocks': clean_extras,
+            })
 
     return output
 
