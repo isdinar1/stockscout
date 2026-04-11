@@ -7,12 +7,148 @@ No API key. No packages. Pure Python stdlib.
 Run: python3 server.py
 """
 import json, re, os, time, io, urllib.request, urllib.parse, html as htmllib
-import zipfile, xml.etree.ElementTree as ET
+import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets
+import http.cookies
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import warnings
 warnings.filterwarnings('ignore')
 import yfinance as yf
 import pdfplumber
+
+# ── Auth / Database ───────────────────────────────────────────────────────────
+DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
+
+def init_db():
+    c = sqlite3.connect(DB)
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        name  TEXT NOT NULL,
+        pw    TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        expires TIMESTAMP NOT NULL
+    )''')
+    c.commit(); c.close()
+
+def _hash(pw):
+    salt = secrets.token_hex(16)
+    h = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100000)
+    return f'{salt}:{h.hex()}'
+
+def _verify(pw, stored):
+    try:
+        salt, h = stored.split(':')
+        return hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100000).hex() == h
+    except:
+        return False
+
+def create_user(email, name, pw):
+    try:
+        c = sqlite3.connect(DB)
+        c.execute('INSERT INTO users (email, name, pw) VALUES (?,?,?)', (email.lower(), name, _hash(pw)))
+        c.commit(); c.close()
+        return True
+    except sqlite3.IntegrityError:
+        return False  # email already exists
+
+def check_user(email, pw):
+    c = sqlite3.connect(DB)
+    row = c.execute('SELECT id, pw FROM users WHERE email=?', (email.lower(),)).fetchone()
+    c.close()
+    if row and _verify(pw, row[1]):
+        return row[0]
+    return None
+
+def new_session(user_id):
+    token = secrets.token_hex(32)
+    c = sqlite3.connect(DB)
+    c.execute('INSERT INTO sessions VALUES (?,?,datetime("now","+30 days"))', (token, user_id))
+    c.commit(); c.close()
+    return token
+
+def session_user(token):
+    if not token: return None
+    c = sqlite3.connect(DB)
+    row = c.execute('SELECT user_id FROM sessions WHERE token=? AND expires>datetime("now")', (token,)).fetchone()
+    c.close()
+    return row[0] if row else None
+
+def delete_session(token):
+    c = sqlite3.connect(DB)
+    c.execute('DELETE FROM sessions WHERE token=?', (token,))
+    c.commit(); c.close()
+
+def get_cookie(headers):
+    raw = headers.get('Cookie','')
+    if not raw: return None
+    jar = http.cookies.SimpleCookie(raw)
+    return jar['session'].value if 'session' in jar else None
+
+def get_user_name(user_id):
+    c = sqlite3.connect(DB)
+    row = c.execute('SELECT name FROM users WHERE id=?', (user_id,)).fetchone()
+    c.close()
+    return row[0] if row else 'User'
+
+# ── Auth page HTML ────────────────────────────────────────────────────────────
+def auth_page(mode='login', error=''):
+    is_login = mode == 'login'
+    title  = 'Sign In' if is_login else 'Create Account'
+    action = '/login'  if is_login else '/signup'
+    switch_text = "Don't have an account?" if is_login else 'Already have an account?'
+    switch_link = '/signup' if is_login else '/login'
+    switch_label = 'Sign up' if is_login else 'Sign in'
+    name_field = '' if is_login else '''
+      <div class="field">
+        <label>Your name</label>
+        <input type="text" name="name" placeholder="John Smith" required />
+      </div>'''
+    err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
+    return f'''<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>StockScout — {title}</title>
+<style>
+*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
+body{{background:#07090f;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}
+.box{{background:#0f1623;border:1px solid #1c2a40;border-radius:18px;padding:40px 44px;width:100%;max-width:420px}}
+.logo{{text-align:center;margin-bottom:28px}}
+.logo h1{{font-size:1.5rem;font-weight:800;color:#fff}}
+.logo p{{color:#4b5e78;font-size:.85rem;margin-top:4px}}
+h2{{font-size:1.1rem;font-weight:700;margin-bottom:22px;color:#fff}}
+.field{{margin-bottom:16px}}
+.field label{{display:block;font-size:.78rem;color:#64748b;margin-bottom:6px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}}
+.field input{{width:100%;background:#07090f;border:1px solid #1c2a40;border-radius:9px;color:#e2e8f0;font-size:.9rem;padding:11px 14px;outline:none;transition:border-color .2s}}
+.field input:focus{{border-color:#3b82f6}}
+.btn{{width:100%;background:linear-gradient(135deg,#1d4ed8,#1e40af);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.95rem;font-weight:700;padding:13px;margin-top:6px;transition:opacity .2s}}
+.btn:hover{{opacity:.88}}
+.switch{{text-align:center;margin-top:20px;font-size:.82rem;color:#4b5e78}}
+.switch a{{color:#60a5fa;text-decoration:none;font-weight:600}}
+.err{{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#fca5a5;font-size:.82rem;padding:10px 14px;margin-bottom:16px}}
+</style></head><body>
+<div class="box">
+  <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
+  <h2>{title}</h2>
+  {err_html}
+  <form method="POST" action="{action}">
+    {name_field}
+    <div class="field">
+      <label>Email</label>
+      <input type="email" name="email" placeholder="you@example.com" required />
+    </div>
+    <div class="field">
+      <label>Password</label>
+      <input type="password" name="password" placeholder="••••••••" required minlength="6" />
+    </div>
+    <button class="btn" type="submit">{title}</button>
+  </form>
+  <div class="switch">{switch_text} <a href="{switch_link}">{switch_label}</a></div>
+</div>
+</body></html>'''
 
 # ── Sector candidate pools (small/mid cap focus) ──────────────────────────────
 # These are stocks we screen when a relevant news theme fires.
@@ -797,28 +933,70 @@ def run_research():
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
 
-    def _send(self, status, content_type, body):
+    def _send(self, status, content_type, body, extra_headers=None):
         if isinstance(body, str):
             body = body.encode()
         self.send_response(status)
         self.send_header('Content-Type',   content_type)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Access-Control-Allow-Origin', '*')
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         self.wfile.write(body)
+
+    def _redirect(self, location, clear_cookie=False):
+        self.send_response(302)
+        self.send_header('Location', location)
+        if clear_cookie:
+            self.send_header('Set-Cookie', 'session=; Path=/; Max-Age=0; HttpOnly')
+        self.end_headers()
+
+    def _authed_user(self):
+        token = get_cookie(dict(self.headers))
+        return session_user(token)
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, OPTIONS')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
         self.end_headers()
 
     def do_GET(self):
-        if self.path == '/':
+        path = self.path.split('?')[0]
+
+        if path in ('/login', '/signup'):
+            mode = 'login' if path == '/login' else 'signup'
+            self._send(200, 'text/html; charset=utf-8', auth_page(mode))
+
+        elif path == '/logout':
+            token = get_cookie(dict(self.headers))
+            if token: delete_session(token)
+            self._redirect('/login', clear_cookie=True)
+
+        elif path == '/':
+            uid = self._authed_user()
+            if not uid:
+                self._redirect('/login')
+                return
+            name = get_user_name(uid)
             p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'index.html')
             with open(p, 'rb') as f:
-                self._send(200, 'text/html; charset=utf-8', f.read())
-        elif self.path == '/scan':
+                html = f.read().decode()
+            # Inject username + logout button into header
+            html = html.replace(
+                '<span class="badge">News-Driven</span>',
+                f'<span class="badge">News-Driven</span>'
+                f'<span style="margin-left:auto;color:#64748b;font-size:.82rem">👤 {htmllib.escape(name)}</span>'
+                f'<a href="/logout" style="color:#ef4444;font-size:.78rem;text-decoration:none;margin-left:14px;font-weight:600">Sign out</a>'
+            )
+            self._send(200, 'text/html; charset=utf-8', html)
+
+        elif path == '/scan':
+            uid = self._authed_user()
+            if not uid:
+                self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
+                return
             print('\n🔍 Scan started...')
             t0 = time.time()
             try:
@@ -833,8 +1011,50 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
 
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', 0))
+        body   = self.rfile.read(length).decode()
+        params = dict(urllib.parse.parse_qsl(body))
+        path   = self.path.split('?')[0]
+
+        if path == '/signup':
+            name  = params.get('name','').strip()
+            email = params.get('email','').strip()
+            pw    = params.get('password','')
+            if not name or not email or not pw:
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'All fields are required.'))
+                return
+            if len(pw) < 6:
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
+                return
+            if not create_user(email, name, pw):
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'An account with that email already exists.'))
+                return
+            uid   = check_user(email, pw)
+            token = new_session(uid)
+            self.send_response(302)
+            self.send_header('Location', '/')
+            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly')
+            self.end_headers()
+
+        elif path == '/login':
+            email = params.get('email','').strip()
+            pw    = params.get('password','')
+            uid   = check_user(email, pw)
+            if not uid:
+                self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Incorrect email or password.'))
+                return
+            token = new_session(uid)
+            self.send_response(302)
+            self.send_header('Location', '/')
+            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly')
+            self.end_headers()
+        else:
+            self._send(404, 'application/json', json.dumps({'error': 'not found'}))
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
+    init_db()
     print(f'\n🚀 StockScout → http://localhost:{port}')
     print('   Open that URL, click "Find Opportunities"\n')
     HTTPServer(('', port), Handler).serve_forever()
