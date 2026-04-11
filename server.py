@@ -19,9 +19,24 @@ import pdfplumber
 # Sessions use HMAC-signed cookies — no DB lookup needed, survives server restarts.
 # Users (email+pw) are stored in SQLite only for login verification.
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
+DATABASE_URL = os.environ.get('DATABASE_URL', '')  # set automatically by Railway Postgres
+
+# ── DB connection (Postgres on Railway, SQLite locally) ───────────────────────
+def _pg():
+    """Return a psycopg2 connection. Only called when DATABASE_URL is set."""
+    import psycopg2
+    return psycopg2.connect(DATABASE_URL)
+
+def _get_conn():
+    if DATABASE_URL:
+        return _pg(), True   # (conn, is_postgres)
+    return sqlite3.connect(DB), False
+
+def _ph(is_pg):
+    """Placeholder: %s for postgres, ? for sqlite."""
+    return '%s' if is_pg else '?'
 
 # Secret for signing session tokens.
-# Priority: SESSION_SECRET env var (set this in Railway) → .secret file → generate+save one.
 def _load_secret():
     if os.environ.get('SESSION_SECRET'):
         return os.environ['SESSION_SECRET']
@@ -29,23 +44,33 @@ def _load_secret():
     if os.path.exists(_sf):
         return open(_sf).read().strip()
     s = secrets.token_hex(32)
-    try:
-        open(_sf, 'w').write(s)
-    except Exception:
-        pass
+    try: open(_sf, 'w').write(s)
+    except Exception: pass
     return s
 
 SESSION_SECRET = _load_secret()
 
 def init_db():
-    c = sqlite3.connect(DB)
-    c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id    INTEGER PRIMARY KEY AUTOINCREMENT,
-        email TEXT UNIQUE NOT NULL,
-        name  TEXT NOT NULL,
-        pw    TEXT NOT NULL
-    )''')
-    c.commit(); c.close()
+    conn, pg = _get_conn()
+    ph = _ph(pg)
+    try:
+        if pg:
+            conn.cursor().execute('''CREATE TABLE IF NOT EXISTS users (
+                id    SERIAL PRIMARY KEY,
+                email TEXT UNIQUE NOT NULL,
+                name  TEXT NOT NULL,
+                pw    TEXT NOT NULL
+            )''')
+        else:
+            conn.execute('''CREATE TABLE IF NOT EXISTS users (
+                id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT UNIQUE NOT NULL,
+                name  TEXT NOT NULL,
+                pw    TEXT NOT NULL
+            )''')
+        conn.commit()
+    finally:
+        conn.close()
 
 def _hash(pw):
     salt = secrets.token_hex(16)
@@ -61,24 +86,41 @@ def _verify(pw, stored):
 
 def create_user(email, name, pw):
     """Insert user. Returns (id, name) or None if email taken."""
+    conn, pg = _get_conn()
+    ph = _ph(pg)
     try:
-        c = sqlite3.connect(DB)
-        cur = c.execute('INSERT INTO users (email,name,pw) VALUES (?,?,?)',
+        if pg:
+            cur = conn.cursor()
+            cur.execute(f'INSERT INTO users (email,name,pw) VALUES ({ph},{ph},{ph}) RETURNING id',
                         (email.lower(), name, _hash(pw)))
-        uid = cur.lastrowid
-        c.commit(); c.close()
+            uid = cur.fetchone()[0]
+        else:
+            cur = conn.execute(f'INSERT INTO users (email,name,pw) VALUES ({ph},{ph},{ph})',
+                               (email.lower(), name, _hash(pw)))
+            uid = cur.lastrowid
+        conn.commit()
         return (uid, name)
-    except sqlite3.IntegrityError:
-        return None
+    except Exception:
+        return None  # email already exists
+    finally:
+        conn.close()
 
 def check_user(email, pw):
     """Returns (id, name) if credentials valid, else None."""
-    c = sqlite3.connect(DB)
-    row = c.execute('SELECT id,name,pw FROM users WHERE email=?', (email.lower(),)).fetchone()
-    c.close()
-    if row and _verify(pw, row[2]):
-        return (row[0], row[1])
-    return None
+    conn, pg = _get_conn()
+    ph = _ph(pg)
+    try:
+        if pg:
+            cur = conn.cursor()
+            cur.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (email.lower(),))
+            row = cur.fetchone()
+        else:
+            row = conn.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (email.lower(),)).fetchone()
+        if row and _verify(pw, row[2]):
+            return (row[0], row[1])
+        return None
+    finally:
+        conn.close()
 
 # ── HMAC session tokens (self-contained, no DB needed) ───────────────────────
 # Token format: base64( uid|name|expiry ) + '.' + hmac_sig
@@ -938,7 +980,7 @@ def run_research():
             r['_theme'] = theme
             all_scored.append(r)
 
-    # ── Fetch Congress trading data in parallel ───────────────────────────────
+    # ── Fetch Congress trading data FIRST (in background) ────────────────────
     import threading
     congress_data = {}
     def _fetch_congress():
@@ -946,12 +988,19 @@ def run_research():
         congress_data = get_congress_trades(max_ptrs=40)
     ct = threading.Thread(target=_fetch_congress, daemon=True)
     ct.start()
+    ct.join(timeout=90)  # wait for congress before enriching
 
     # ── Enrich top scorers with name + market cap ─────────────────────────────
     all_scored.sort(key=lambda x: -x['score'])
-    top_syms = list({r['symbol'] for r in all_scored[:50]})
+
+    # Also include any congress-traded symbols so we can fetch their prices
+    congress_buy_tickers = [sym for sym, trades in congress_data.items()
+                            if any(t['type'] == 'Buy' for t in trades)]
+
+    top_syms = list({r['symbol'] for r in all_scored[:50]} | set(congress_buy_tickers[:20]))
     print(f'  → Enriching top {len(top_syms)} picks with name/market cap...')
     enriched = enrich_top(top_syms)
+
     for r in all_scored:
         if r['symbol'] in enriched:
             e  = enriched[r['symbol']]
@@ -962,22 +1011,15 @@ def run_research():
             if mc and mc > 60e9:
                 r['score'] = 0  # demote mega caps
 
-    all_scored.sort(key=lambda x: -x['score'])
-
-    # ── Wait for Congress data, then annotate ─────────────────────────────────
-    ct.join(timeout=60)
+    # ── Annotate scored stocks with congress trades ───────────────────────────
     for r in all_scored:
         sym    = r['symbol']
         trades = congress_data.get(sym, [])
+        r['congressTrades'] = trades
         if trades:
-            r['congressTrades'] = trades
             buys = sum(1 for t in trades if t['type'] == 'Buy')
-            if buys >= 2:
-                r['score'] = min(100, r['score'] + 10)
-            elif buys == 1:
-                r['score'] = min(100, r['score'] + 5)
-        else:
-            r['congressTrades'] = []
+            if buys >= 2: r['score'] = min(100, r['score'] + 10)
+            elif buys == 1: r['score'] = min(100, r['score'] + 5)
 
     all_scored.sort(key=lambda x: -x['score'])
 
@@ -988,12 +1030,11 @@ def run_research():
         theme_stocks_raw = [
             r for r in all_scored
             if r.get('_theme', {}).get('id') == theme['id'] and r['symbol'] not in used_syms
-        ][:6]  # up to 6 per theme
+        ][:6]
 
         if not theme_stocks_raw:
             continue
 
-        # Make clean copies without internal keys
         theme_stocks = []
         for r in theme_stocks_raw:
             used_syms.add(r['symbol'])
@@ -1011,6 +1052,66 @@ def run_research():
             'stocks':     theme_stocks,
         })
 
+    # ── Add "Congress is Buying" theme from actual congress trade data ─────────
+    # Congress members buy large caps (AAPL, TSLA etc) — different from our sectors.
+    # This section shows exactly what congress bought, with their photos attached.
+    congress_stocks = []
+    congress_buy_syms = [(sym, trades) for sym, trades in congress_data.items()
+                         if any(t['type'] == 'Buy' for t in trades)
+                         and sym not in used_syms]
+    # Sort by number of distinct buyers
+    congress_buy_syms.sort(key=lambda x: len({t['name'] for t in x[1] if t['type']=='Buy'}), reverse=True)
+
+    # Fetch price data for top congress-bought symbols we don't already have
+    new_cong_syms = [s for s, _ in congress_buy_syms[:12] if s not in chart_cache]
+    if new_cong_syms:
+        extra_cache = batch_fetch(new_cong_syms)
+        chart_cache.update(extra_cache)
+
+    for sym, trades in congress_buy_syms[:10]:
+        ch = chart_cache.get(sym)
+        if not ch: continue
+        buyers = [t for t in trades if t['type'] == 'Buy']
+        buyer_names = list({t['name'] for t in buyers})
+        e = enriched.get(sym, {})
+        mc = e.get('mc', 0)
+        price = ch.get('price', 0)
+        closes = ch.get('closes', [])
+        chg5 = ch.get('chg5', 0)
+        pct_chg = round(((closes[-1]-closes[0])/closes[0]*100) if len(closes)>1 else 0, 1)
+        used_syms.add(sym)
+        congress_stocks.append({
+            'symbol': sym,
+            'name': e.get('name', sym),
+            'price': price,
+            'target': None, 'upsidePct': None,
+            'score': min(100, 50 + len(buyers) * 8),
+            'signal': 'Strong Setup' if len(buyers) >= 2 else 'Worth Watching',
+            'capLabel': cap_label(mc),
+            'why': f"{'Multiple members' if len(buyer_names)>1 else buyer_names[0]} recently purchased ${sym} — Congress members must file trades within 45 days under the STOCK Act.",
+            'direction': 'up',
+            'closes': closes,
+            'stats': {
+                '52w pos': f'{int(ch.get("w52",0)*100)}%',
+                'RSI': str(ch.get('rsi', 0)),
+                '5d': f'{chg5:+.1f}%',
+                'cap': fmt_mc(mc) if mc else 'N/A',
+            },
+            'congressTrades': trades,
+        })
+        print(f'    🏛️ {sym:6s} buyers={len(buyers)} [{", ".join(buyer_names[:2])}]')
+
+    if congress_stocks:
+        output.append({
+            'themeId':    'congress_buying',
+            'themeIcon':  '🏛️',
+            'themeTitle': 'Congress Is Buying',
+            'themeLogic': 'Stocks recently purchased by members of Congress, disclosed under the STOCK Act. '
+                          'Members must report trades within 45 days. Multiple buyers = stronger signal.',
+            'headlines':  [],
+            'stocks':     congress_stocks,
+        })
+
     # Guarantee at least 10 total stocks — backfill from high scorers not yet shown
     total = sum(len(g['stocks']) for g in output)
     if total < 10 and all_scored:
@@ -1022,7 +1123,6 @@ def run_research():
                 clean = {k: v for k, v in r.items() if not k.startswith('_')}
                 output[0]['stocks'].append(clean)
         elif extras:
-            # No themes at all — make a catch-all group
             clean_extras = []
             for r in extras:
                 used_syms.add(r['symbol'])
