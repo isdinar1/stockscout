@@ -399,7 +399,7 @@ def get_legislators_map():
         return _legislators_cache
     try:
         req = urllib.request.Request(
-            'https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.json',
+            'https://unitedstates.github.io/congress-legislators/legislators-current.json',
             headers={'User-Agent': UA}
         )
         with urllib.request.urlopen(req, timeout=15) as r:
