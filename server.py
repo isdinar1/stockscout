@@ -602,14 +602,15 @@ def batch_fetch(symbols):
                 rsi_val = 100 - 100 / (1 + g / l) if l > 0 else 100.0
 
                 results[sym] = {
-                    'price': round(curr, 2),
-                    'hi52':  round(hi52, 2),
-                    'lo52':  round(lo52, 2),
-                    'w52':   w52,
-                    'chg5':  round(chg5, 1),
-                    'vol_r': round(vol_r, 1),
-                    'rsi':   round(rsi_val, 1),
-                    'name':  sym,
+                    'price':  round(curr, 2),
+                    'hi52':   round(hi52, 2),
+                    'lo52':   round(lo52, 2),
+                    'w52':    w52,
+                    'chg5':   round(chg5, 1),
+                    'vol_r':  round(vol_r, 1),
+                    'rsi':    round(rsi_val, 1),
+                    'name':   sym,
+                    'closes': [round(c, 2) for c in closes[-90:]],  # 90-day chart
                 }
             except Exception as e:
                 pass
@@ -790,19 +791,20 @@ def analyze(symbol, theme, direction, ch, mc=0):
     if vol_r > 1.2:     stats['vol'] = f'{vol_r:.1f}x avg'
 
     return {
-        'symbol':    symbol,
-        'name':      name,
-        'price':     price,
-        'target':    None,
-        'upsidePct': None,
-        'score':     score,
-        'signal':    sig,
-        'sigClass':  sc,
-        'capLabel':  cap_label(mc),
-        'why':       why,
-        'topNews':   [],
-        'stats':     stats,
-        'direction': direction,
+        'symbol':         symbol,
+        'name':           name,
+        'price':          price,
+        'target':         None,
+        'upsidePct':      None,
+        'score':          score,
+        'signal':         sig,
+        'sigClass':       sc,
+        'capLabel':       cap_label(mc),
+        'why':            why,
+        'topNews':        [],
+        'stats':          stats,
+        'direction':      direction,
+        'closes':         ch.get('closes', []),
     }
 
 # ── Main research pipeline ────────────────────────────────────────────────────
@@ -884,15 +886,14 @@ def run_research():
         sym    = r['symbol']
         trades = congress_data.get(sym, [])
         if trades:
-            sig = congress_signal(sym, trades)
-            r['congressSignal'] = sig
+            r['congressTrades'] = trades
             buys = sum(1 for t in trades if t['type'] == 'Buy')
             if buys >= 2:
                 r['score'] = min(100, r['score'] + 10)
             elif buys == 1:
                 r['score'] = min(100, r['score'] + 5)
         else:
-            r['congressSignal'] = ''
+            r['congressTrades'] = []
 
     all_scored.sort(key=lambda x: -x['score'])
 
