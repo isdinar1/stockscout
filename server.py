@@ -7,7 +7,7 @@ No API key. No packages. Pure Python stdlib.
 Run: python3 server.py
 """
 import json, re, os, time, io, urllib.request, urllib.parse, html as htmllib
-import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets
+import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets, hmac, base64
 import http.cookies
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import warnings
@@ -16,84 +16,91 @@ import yfinance as yf
 import pdfplumber
 
 # ── Auth / Database ───────────────────────────────────────────────────────────
+# Sessions use HMAC-signed cookies — no DB lookup needed, survives server restarts.
+# Users (email+pw) are stored in SQLite only for login verification.
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
+
+# Secret for signing session tokens. Set SESSION_SECRET env var in Railway so it
+# persists across redeploys. Falls back to a random value (sessions reset on restart).
+SESSION_SECRET = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
 
 def init_db():
     c = sqlite3.connect(DB)
     c.execute('''CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
         email TEXT UNIQUE NOT NULL,
         name  TEXT NOT NULL,
-        pw    TEXT NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )''')
-    c.execute('''CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        expires TIMESTAMP NOT NULL
+        pw    TEXT NOT NULL
     )''')
     c.commit(); c.close()
 
 def _hash(pw):
     salt = secrets.token_hex(16)
-    h = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100000)
+    h = hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100_000)
     return f'{salt}:{h.hex()}'
 
 def _verify(pw, stored):
     try:
         salt, h = stored.split(':')
-        return hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100000).hex() == h
+        return hashlib.pbkdf2_hmac('sha256', pw.encode(), salt.encode(), 100_000).hex() == h
     except:
         return False
 
 def create_user(email, name, pw):
+    """Insert user. Returns (id, name) or None if email taken."""
     try:
         c = sqlite3.connect(DB)
-        cur = c.execute('INSERT INTO users (email, name, pw) VALUES (?,?,?)', (email.lower(), name, _hash(pw)))
+        cur = c.execute('INSERT INTO users (email,name,pw) VALUES (?,?,?)',
+                        (email.lower(), name, _hash(pw)))
         uid = cur.lastrowid
         c.commit(); c.close()
-        return uid  # return the new user's id directly
+        return (uid, name)
     except sqlite3.IntegrityError:
-        return None  # email already exists
+        return None
 
 def check_user(email, pw):
+    """Returns (id, name) if credentials valid, else None."""
     c = sqlite3.connect(DB)
-    row = c.execute('SELECT id, pw FROM users WHERE email=?', (email.lower(),)).fetchone()
+    row = c.execute('SELECT id,name,pw FROM users WHERE email=?', (email.lower(),)).fetchone()
     c.close()
-    if row and _verify(pw, row[1]):
-        return row[0]
+    if row and _verify(pw, row[2]):
+        return (row[0], row[1])
     return None
 
-def new_session(user_id):
-    token = secrets.token_hex(32)
-    c = sqlite3.connect(DB)
-    c.execute('INSERT INTO sessions VALUES (?,?,datetime("now","+30 days"))', (token, user_id))
-    c.commit(); c.close()
-    return token
+# ── HMAC session tokens (self-contained, no DB needed) ───────────────────────
+# Token format: base64( uid|name|expiry ) + '.' + hmac_sig
 
-def session_user(token):
-    if not token: return None
-    c = sqlite3.connect(DB)
-    row = c.execute('SELECT user_id FROM sessions WHERE token=? AND expires>datetime("now")', (token,)).fetchone()
-    c.close()
-    return row[0] if row else None
+def new_session(uid, name):
+    """Create a signed session cookie value encoding uid + name + expiry."""
+    expiry  = int(time.time()) + 2_592_000          # 30 days
+    payload = base64.urlsafe_b64encode(
+        f'{uid}\x00{name}\x00{expiry}'.encode()
+    ).decode().rstrip('=')
+    sig = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+    return f'{payload}.{sig}'
 
-def delete_session(token):
-    c = sqlite3.connect(DB)
-    c.execute('DELETE FROM sessions WHERE token=?', (token,))
-    c.commit(); c.close()
+def session_info(token):
+    """Verify token. Returns (uid, name) or None."""
+    if not token or '.' not in token:
+        return None
+    try:
+        payload, sig = token.rsplit('.', 1)
+        expected = hmac.new(SESSION_SECRET.encode(), payload.encode(), hashlib.sha256).hexdigest()[:24]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        pad     = payload + '=' * (-len(payload) % 4)
+        uid_str, name, expiry_str = base64.urlsafe_b64decode(pad).decode().split('\x00')
+        if int(time.time()) > int(expiry_str):
+            return None
+        return (int(uid_str), name)
+    except:
+        return None
 
 def get_cookie(headers):
-    raw = headers.get('Cookie','')
+    raw = headers.get('Cookie', '')
     if not raw: return None
     jar = http.cookies.SimpleCookie(raw)
     return jar['session'].value if 'session' in jar else None
-
-def get_user_name(user_id):
-    c = sqlite3.connect(DB)
-    row = c.execute('SELECT name FROM users WHERE id=?', (user_id,)).fetchone()
-    c.close()
-    return row[0] if row else 'User'
 
 # ── Auth page HTML ────────────────────────────────────────────────────────────
 def auth_page(mode='login', error=''):
@@ -379,7 +386,7 @@ def get_legislators_map():
         return _legislators_cache
     try:
         req = urllib.request.Request(
-            'https://theunitedstates.io/congress-legislators/legislators-current.json',
+            'https://raw.githubusercontent.com/unitedstates/congress-legislators/main/legislators-current.json',
             headers={'User-Agent': UA}
         )
         with urllib.request.urlopen(req, timeout=15) as r:
@@ -411,19 +418,19 @@ def member_photo_url(name, leg_map):
         return ''
     nl = name.lower().strip()
     if nl in leg_map:
-        return f'https://theunitedstates.io/images/congress/225x275/{leg_map[nl]}.jpg'
+        return f'https://raw.githubusercontent.com/unitedstates/images/gh-pages/congress/225x275/{leg_map[nl]}.jpg'
     parts = nl.split()
     if len(parts) >= 2:
         # Try "Last, First" and reversed
         for attempt in [f'{parts[-1]}, {parts[0]}', f'{parts[0]} {parts[-1]}',
                          f'{" ".join(parts[1:])} {parts[0]}']:
             if attempt in leg_map:
-                return f'https://theunitedstates.io/images/congress/225x275/{leg_map[attempt]}.jpg'
+                return f'https://raw.githubusercontent.com/unitedstates/images/gh-pages/congress/225x275/{leg_map[attempt]}.jpg'
         # Last-name-only fallback
         last = parts[-1]
         for key, bio_id in leg_map.items():
             if key.split()[-1] == last or key.startswith(last + ','):
-                return f'https://theunitedstates.io/images/congress/225x275/{bio_id}.jpg'
+                return f'https://raw.githubusercontent.com/unitedstates/images/gh-pages/congress/225x275/{bio_id}.jpg'
     return ''
 
 # ── Congress trading data ─────────────────────────────────────────────────────
@@ -1036,12 +1043,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(302)
         self.send_header('Location', location)
         if clear_cookie:
-            self.send_header('Set-Cookie', 'session=; Path=/; Max-Age=0; HttpOnly')
+            self.send_header('Set-Cookie', 'session=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax')
         self.end_headers()
 
-    def _authed_user(self):
-        token = get_cookie(dict(self.headers))
-        return session_user(token)
+    def _cookie_header(self, token):
+        """Build Set-Cookie string. Adds Secure flag when behind HTTPS proxy (Railway)."""
+        secure = '; Secure' if self.headers.get('X-Forwarded-Proto') == 'https' else ''
+        return f'session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax{secure}'
+
+    def _authed(self):
+        """Returns (uid, name) or (None, None)."""
+        token = get_cookie(self.headers)
+        info  = session_info(token)
+        return info if info else (None, None)
 
     def do_OPTIONS(self):
         self.send_response(204)
@@ -1057,20 +1071,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, 'text/html; charset=utf-8', auth_page(mode))
 
         elif path == '/logout':
-            token = get_cookie(dict(self.headers))
-            if token: delete_session(token)
             self._redirect('/login', clear_cookie=True)
 
         elif path == '/':
-            uid = self._authed_user()
+            uid, name = self._authed()
             if not uid:
                 self._redirect('/login')
                 return
-            name = get_user_name(uid)
             p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'index.html')
             with open(p, 'rb') as f:
                 html = f.read().decode()
-            # Inject username + logout button into header
             html = html.replace(
                 '<span class="badge">News-Driven</span>',
                 f'<span class="badge">News-Driven</span>'
@@ -1080,7 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, 'text/html; charset=utf-8', html)
 
         elif path == '/scan':
-            uid = self._authed_user()
+            uid, _ = self._authed()
             if not uid:
                 self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
                 return
@@ -1114,27 +1124,29 @@ class Handler(BaseHTTPRequestHandler):
             if len(pw) < 6:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
                 return
-            uid = create_user(email, name, pw)
-            if not uid:
+            result = create_user(email, name, pw)
+            if not result:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'An account with that email already exists.'))
                 return
-            token = new_session(uid)
+            uid, uname = result
+            token = new_session(uid, uname)
             self.send_response(302)
             self.send_header('Location', '/')
-            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax')
+            self.send_header('Set-Cookie', self._cookie_header(token))
             self.end_headers()
 
         elif path == '/login':
             email = params.get('email','').strip()
             pw    = params.get('password','')
-            uid   = check_user(email, pw)
-            if not uid:
+            result = check_user(email, pw)
+            if not result:
                 self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Incorrect email or password.'))
                 return
-            token = new_session(uid)
+            uid, uname = result
+            token = new_session(uid, uname)
             self.send_response(302)
             self.send_header('Location', '/')
-            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax')
+            self.send_header('Set-Cookie', self._cookie_header(token))
             self.end_headers()
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))

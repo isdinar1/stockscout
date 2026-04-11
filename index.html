@@ -251,13 +251,12 @@ function sparkline(closes, id) {
 }
 
 function avatarImg(trade, cls) {
-  const initials = (trade.name || '?').split(' ').map(w => w[0]).slice(0,2).join('');
-  if (trade.photo) {
-    return `<img src="${trade.photo}" class="${cls}" alt="${trade.name}"
-              onerror="this.style.display='none';this.nextSibling.style.display='inline-flex'">
-            <span class="${cls.replace('avatar','avatar-placeholder')}" style="display:none">${initials}</span>`;
-  }
-  return `<span class="${cls.replace('avatar','avatar-placeholder')}">${initials}</span>`;
+  const name = (trade.name || 'Congress Member').trim();
+  const sz   = cls.includes('-sm') ? 56 : 40;
+  // ui-avatars always works — purple background with initials
+  const fallback = `https://ui-avatars.com/api/?name=${encodeURIComponent(name)}&background=6d28d9&color=fff&size=${sz}&bold=true&rounded=true`;
+  const src = trade.photo || fallback;
+  return `<img src="${src}" class="${cls}" alt="${name}" onerror="this.src='${fallback}'" loading="lazy">`;
 }
 
 function congressBadge(trades) {
