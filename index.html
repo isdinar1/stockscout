@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockScout — News-Driven Picks</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --bg:#07090f; --surf:#0f1623; --surf2:#161f30; --border:#1c2a40;
+      --accent:#3b82f6; --a2:#60a5fa; --green:#10b981; --g2:#34d399;
+      --red:#ef4444; --yellow:#f59e0b; --text:#e2e8f0; --muted:#4b5e78;
+    }
+    body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; min-height:100vh; }
+
+    header { background:var(--surf); border-bottom:1px solid var(--border); padding:18px 28px; display:flex; align-items:center; gap:12px; }
+    header h1 { font-size:1.15rem; font-weight:700; color:#fff; }
+    .badge { background:rgba(59,130,246,.15); border:1px solid rgba(59,130,246,.3); border-radius:20px; color:var(--a2); font-size:.7rem; font-weight:700; letter-spacing:.06em; padding:3px 10px; text-transform:uppercase; }
+
+    .hero { max-width:700px; margin:50px auto 0; padding:0 20px; text-align:center; }
+    .hero h2 { font-size:2rem; font-weight:800; line-height:1.25; margin-bottom:14px; }
+    .hero h2 em { font-style:normal; background:linear-gradient(135deg,var(--a2),var(--g2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .hero p { color:#64748b; font-size:.9rem; line-height:1.8; margin-bottom:30px; }
+
+    .btn { background:linear-gradient(135deg,#1d4ed8,#1e40af); border:none; border-radius:12px; color:#fff; cursor:pointer; font-size:1rem; font-weight:700; padding:15px 50px; transition:all .2s; box-shadow:0 4px 24px rgba(29,78,216,.4); }
+    .btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 8px 32px rgba(29,78,216,.5); }
+    .btn:disabled { background:#1e293b; box-shadow:none; cursor:not-allowed; color:var(--muted); transform:none; }
+
+    .wrap { max-width:880px; margin:40px auto 80px; padding:0 20px; }
+
+    /* Loader */
+    .loader { text-align:center; padding:70px 20px; }
+    .ring { width:48px; height:48px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 20px; }
+    @keyframes spin { to { transform:rotate(360deg); } }
+    .loader h3 { font-size:1rem; font-weight:600; margin-bottom:10px; }
+    .steps span { display:block; color:var(--muted); font-size:.83rem; line-height:2.1; opacity:.4; transition:opacity .4s; }
+    .steps span.active { opacity:1; color:var(--a2); }
+
+    /* Theme block */
+    .theme-block { margin-bottom:40px; }
+    .theme-hd {
+      background:var(--surf);
+      border:1px solid var(--border);
+      border-radius:14px 14px 0 0;
+      padding:20px 22px 16px;
+      border-bottom:1px solid rgba(59,130,246,.2);
+    }
+    .theme-top { display:flex; align-items:center; gap:14px; margin-bottom:10px; }
+    .theme-icon { font-size:1.8rem; line-height:1; }
+    .theme-title { font-size:1.1rem; font-weight:800; color:#fff; }
+    .theme-logic { color:#64748b; font-size:.82rem; line-height:1.7; margin-top:2px; }
+
+    .headlines-row { display:flex; flex-direction:column; gap:5px; margin-top:12px; }
+    .headline-chip {
+      background:rgba(59,130,246,.08);
+      border:1px solid rgba(59,130,246,.18);
+      border-radius:7px;
+      color:#93c5fd;
+      font-size:.76rem;
+      line-height:1.5;
+      padding:6px 12px;
+    }
+    .headline-chip::before { content:'📰  '; }
+
+    /* Cards */
+    .cards-row { background:var(--surf); border:1px solid var(--border); border-top:none; border-radius:0 0 14px 14px; padding:16px; display:grid; gap:12px; }
+
+    .card { background:var(--surf2); border:1px solid var(--border); border-radius:12px; padding:18px 20px; animation:rise .35s ease backwards; transition:border-color .2s; }
+    .card:hover { border-color:#263d5a; }
+    @keyframes rise { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+
+    .card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:10px; margin-bottom:14px; flex-wrap:wrap; }
+    .left { display:flex; align-items:center; gap:10px; }
+    .ticker { background:var(--bg); border-radius:8px; color:var(--a2); font-size:1rem; font-weight:800; letter-spacing:.06em; padding:7px 13px; }
+    .price-line .price { color:#fff; font-size:.9rem; font-weight:700; }
+    .price-line .target { color:var(--green); font-size:.76rem; margin-left:6px; }
+    .cap-tag { background:var(--bg); border-radius:4px; color:var(--muted); font-size:.68rem; padding:2px 7px; margin-top:3px; display:inline-block; }
+    .dir-tag { border-radius:5px; font-size:.65rem; font-weight:800; letter-spacing:.07em; padding:3px 8px; text-transform:uppercase; margin-top:3px; display:inline-block; }
+    .dir-up   { background:rgba(16,185,129,.1);  color:var(--g2);    border:1px solid rgba(16,185,129,.25); }
+    .dir-down { background:rgba(239,68,68,.08);   color:#fca5a5;      border:1px solid rgba(239,68,68,.2); }
+
+    .signal { border-radius:7px; font-size:.68rem; font-weight:800; letter-spacing:.07em; padding:6px 12px; text-transform:uppercase; white-space:nowrap; }
+    .s-strong   { background:rgba(16,185,129,.14); border:1px solid rgba(16,185,129,.35); color:var(--g2); }
+    .s-moderate { background:rgba(59,130,246,.12); border:1px solid rgba(59,130,246,.35); color:var(--a2); }
+    .s-watch    { background:rgba(245,158,11,.12);  border:1px solid rgba(245,158,11,.35);  color:var(--yellow); }
+    .s-caution  { background:rgba(239,68,68,.1);    border:1px solid rgba(239,68,68,.3);    color:var(--red); }
+
+    .bar-row { display:flex; align-items:center; gap:10px; margin-bottom:14px; }
+    .bar-lbl { color:var(--muted); font-size:.72rem; width:72px; flex-shrink:0; }
+    .bar-track { flex:1; background:var(--bg); border-radius:4px; height:6px; overflow:hidden; }
+    .bar-fill { height:100%; border-radius:4px; transition:width 1s cubic-bezier(.4,0,.2,1); width:0; }
+    .f-green { background:linear-gradient(90deg,#059669,var(--g2)); }
+    .f-blue  { background:linear-gradient(90deg,#1d4ed8,var(--a2)); }
+    .f-red   { background:linear-gradient(90deg,#b91c1c,var(--red)); }
+    .bar-num { color:var(--text); font-size:.76rem; font-weight:700; width:22px; text-align:right; }
+
+    .why { background:var(--bg); border-radius:8px; padding:12px 14px; margin-bottom:12px; }
+    .why-hd { color:var(--muted); font-size:.65rem; letter-spacing:.08em; text-transform:uppercase; margin-bottom:5px; }
+    .why-body { color:#94a3b8; font-size:.82rem; line-height:1.7; }
+
+    .news-list { margin-bottom:12px; display:flex; flex-direction:column; gap:4px; }
+    .news-item { background:var(--bg); border-left:2px solid var(--border); border-radius:0 5px 5px 0; color:#94a3b8; font-size:.76rem; line-height:1.45; padding:5px 10px; }
+
+    .stats { display:flex; gap:6px; flex-wrap:wrap; }
+    .st { background:var(--bg); border-radius:5px; font-size:.7rem; padding:3px 9px; }
+    .sv { color:var(--a2); font-weight:700; }
+    .sl { color:var(--muted); margin-left:3px; }
+
+    .err { background:rgba(239,68,68,.08); border:1px solid rgba(239,68,68,.25); border-radius:10px; color:#fca5a5; font-size:.88rem; padding:20px 24px; line-height:1.7; }
+    .err code { background:#0f1623; border-radius:5px; color:var(--a2); display:block; font-size:.85rem; margin-top:10px; padding:10px 14px; }
+    .congress-tag { background:rgba(168,85,247,.1); border:1px solid rgba(168,85,247,.25); border-radius:7px; color:#c4b5fd; font-size:.76rem; padding:7px 12px; margin-bottom:12px; }
+    .disc { color:var(--muted); font-size:.7rem; margin-top:24px; text-align:center; line-height:1.75; }
+  </style>
+</head>
+<body>
+
+<header>
+  <span style="font-size:1.4rem">📡</span>
+  <h1>StockScout</h1>
+  <span class="badge">News-Driven</span>
+</header>
+
+<div class="hero">
+  <h2>What's happening in the world,<br><em>and what stocks it moves</em></h2>
+  <p>
+    Reads today's financial news, figures out which sectors are affected — a ceasefire,
+    an oil supply cut, a Fed decision — then finds small stocks in those sectors
+    that haven't moved yet and are near their lows.
+  </p>
+  <button class="btn" id="btn" onclick="scan()">📡 Find Opportunities</button>
+</div>
+
+<div class="wrap" id="wrap"></div>
+
+<script>
+const API = 'http://localhost:8080';
+
+const STEPS = [
+  'Reading today\'s top financial news…',
+  'Detecting major themes (oil, geopolitics, rates, AI…)',
+  'Mapping themes to affected sectors…',
+  'Finding small/mid-cap stocks in each sector…',
+  'Checking 52-week ranges, RSI, volume spikes…',
+  'Filtering out stocks that already moved…',
+  'Ranking by upside potential…',
+];
+
+let stepTimer;
+function startSteps() {
+  let i = 0;
+  const els = document.querySelectorAll('.steps span');
+  if (!els.length) return;
+  els[0].classList.add('active');
+  stepTimer = setInterval(() => {
+    if (i < els.length - 1) {
+      els[i].classList.remove('active');
+      els[++i].classList.add('active');
+    }
+  }, 5000);
+}
+
+async function scan() {
+  const btn = document.getElementById('btn');
+  btn.disabled = true; btn.textContent = 'Scanning news…';
+  clearInterval(stepTimer);
+
+  document.getElementById('wrap').innerHTML = `
+    <div class="loader">
+      <div class="ring"></div>
+      <h3>Scanning today's news for opportunities…</h3>
+      <div class="steps">${STEPS.map(s => `<span>${s}</span>`).join('')}</div>
+    </div>`;
+
+  setTimeout(startSteps, 100);
+
+  try {
+    const res = await fetch(`${API}/scan`, { signal: AbortSignal.timeout(150000) });
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    render(data);
+  } catch (e) {
+    document.getElementById('wrap').innerHTML = `
+      <div class="err">
+        <strong>Server not running.</strong> Open a terminal and run:
+        <code>cd ~/stock-app && python3 server.py</code>
+        Then click "Find Opportunities" again.
+      </div>`;
+  } finally {
+    clearInterval(stepTimer);
+    btn.disabled = false; btn.textContent = '📡 Find Opportunities';
+  }
+}
+
+const sigClass = { 'Strong Setup':'s-strong', 'Worth Watching':'s-moderate', 'On Radar':'s-watch', 'Cautious':'s-caution' };
+const fillClass = s => s >= 62 ? 'f-green' : s >= 46 ? 'f-blue' : 'f-red';
+
+function render(themes) {
+  if (!themes || !themes.length) {
+    document.getElementById('wrap').innerHTML =
+      '<p style="text-align:center;color:var(--muted);padding:60px 0">No strong themes detected — try again shortly.</p>';
+    return;
+  }
+
+  let html = '';
+  let cardIdx = 0;
+
+  themes.forEach(theme => {
+    // ── Theme header ──────────────────────────────────────────────────────
+    const headlineHtml = (theme.headlines || []).map(h =>
+      `<div class="headline-chip">${h.slice(0, 130)}${h.length > 130 ? '…' : ''}</div>`
+    ).join('');
+
+    html += `
+    <div class="theme-block">
+      <div class="theme-hd">
+        <div class="theme-top">
+          <span class="theme-icon">${theme.themeIcon}</span>
+          <div>
+            <div class="theme-title">${theme.themeTitle}</div>
+            <div class="theme-logic">${theme.themeLogic}</div>
+          </div>
+        </div>
+        ${headlineHtml ? `<div class="headlines-row">${headlineHtml}</div>` : ''}
+      </div>
+      <div class="cards-row">`;
+
+    // ── Stock cards ───────────────────────────────────────────────────────
+    (theme.stocks || []).forEach(s => {
+      const sc  = sigClass[s.signal] || 's-watch';
+      const fc  = fillClass(s.score);
+      const dir = s.direction === 'up'
+        ? '<span class="dir-tag dir-up">↑ Long</span>'
+        : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
+
+      const priceStr = `<span class="price">$${s.price}</span>` +
+        (s.target ? `<span class="target">→ $${s.target}${s.upsidePct ? ` (+${s.upsidePct}%)` : ''}</span>` : '');
+
+      const newsHtml = (s.topNews || []).map(n =>
+        `<div class="news-item">${n.slice(0, 105)}${n.length > 105 ? '…' : ''}</div>`).join('');
+
+      const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
+        `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
+
+      html += `
+        <div class="card" style="animation-delay:${cardIdx * .07}s">
+          <div class="card-top">
+            <div class="left">
+              <div class="ticker">$${s.symbol}</div>
+              <div>
+                <div class="price-line">${priceStr}</div>
+                <span class="cap-tag">${s.capLabel}</span>
+                ${dir}
+              </div>
+            </div>
+            <span class="signal ${sc}">${s.signal}</span>
+          </div>
+
+          <div class="bar-row">
+            <span class="bar-lbl">Confidence</span>
+            <div class="bar-track"><div class="bar-fill ${fc}" id="b${cardIdx}"></div></div>
+            <span class="bar-num">${s.score}</span>
+          </div>
+
+          <div class="why">
+            <div class="why-hd">Why this story moves this stock</div>
+            <div class="why-body">${s.why}</div>
+          </div>
+
+          ${s.congressSignal ? `<div class="congress-tag">${s.congressSignal}</div>` : ''}
+
+          ${newsHtml ? `<div class="news-list">${newsHtml}</div>` : ''}
+          <div class="stats">${statHtml}</div>
+        </div>`;
+      cardIdx++;
+    });
+
+    html += `</div></div>`;
+  });
+
+  html += `<p class="disc">
+    ⚠️ Not financial advice. Analysis is based on public news, technical indicators, and sector logic only.<br>
+    Small/micro-cap stocks are highly volatile. Always do your own research before trading.
+  </p>`;
+
+  document.getElementById('wrap').innerHTML = html;
+
+  requestAnimationFrame(() => {
+    for (let i = 0; i < cardIdx; i++) {
+      setTimeout(() => {
+        const b = document.getElementById('b' + i);
+        // find which theme/stock this belongs to
+        let idx = 0;
+        for (const theme of themes) {
+          for (const s of (theme.stocks || [])) {
+            if (idx === i && b) b.style.width = s.score + '%';
+            idx++;
+          }
+        }
+      }, 80 + i * 60);
+    }
+  });
+}
+</script>
+</body>
+</html>
