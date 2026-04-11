@@ -163,13 +163,10 @@ def get_cookie(headers):
 _pending = {}  # token -> {name, contact, contact_type, pw, code, expires}
 
 def is_phone(s):
-    digits = re.sub(r'\D', '', s)
-    return len(digits) >= 10 and not '@' in s
+    return bool(re.fullmatch(r'\d{3}-\d{3}-\d{4}', s.strip()))
 
-def normalize_phone(s):
-    digits = re.sub(r'\D', '', s)
-    if len(digits) == 10: digits = '1' + digits
-    return '+' + digits
+def is_email(s):
+    return '@' in s and '.' in s.split('@')[-1]
 
 def create_pending(name, contact, pw):
     """Store pending signup with a 6-digit code. Returns (token, code)."""
@@ -276,19 +273,52 @@ def auth_page(mode='login', error=''):
       </div>'''
     contact_field = '''
       <div class="field">
-        <label>Email</label>
-        <input type="email" name="contact" placeholder="you@example.com" required autocomplete="email"/>
+        <label>Email or Phone</label>
+        <input type="text" name="contact" placeholder="you@example.com  or  555-867-5309" required autocomplete="email"/>
       </div>''' if is_login else '''
-      <div class="field">
-        <label>Email or Phone number</label>
-        <input type="text" name="contact" placeholder="you@example.com  or  +1 555 000 0000" required autocomplete="email"/>
+      <div class="tabs">
+        <button type="button" class="tab active" onclick="switchTab('email')">Email</button>
+        <button type="button" class="tab" onclick="switchTab('phone')">Phone</button>
+      </div>
+      <div id="tab-email" class="field">
+        <label>Email address</label>
+        <input type="email" name="email" placeholder="you@example.com" autocomplete="email"/>
+      </div>
+      <div id="tab-phone" class="field" style="display:none">
+        <label>Phone number</label>
+        <input type="tel" name="phone" placeholder="555-867-5309"
+               pattern="\\d{3}-\\d{3}-\\d{4}" maxlength="12"
+               oninput="fmtPhone(this)" autocomplete="tel"/>
+        <div style="color:#4b5e78;font-size:.72rem;margin-top:5px">Format: 555-867-5309</div>
       </div>'''
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
+    extra_css = '''
+.tabs{display:flex;gap:8px;margin-bottom:16px}
+.tab{flex:1;background:#07090f;border:1px solid #1c2a40;border-radius:8px;color:#4b5e78;cursor:pointer;font-size:.82rem;font-weight:600;padding:8px;transition:all .2s}
+.tab.active{background:rgba(59,130,246,.12);border-color:#3b82f6;color:#60a5fa}
+''' if not is_login else ''
+    extra_js = '''
+<script>
+function switchTab(t){
+  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.getElementById('tab-email').style.display = t==='email'?'':'none';
+  document.getElementById('tab-phone').style.display = t==='phone'?'':'none';
+  document.querySelector('#tab-email input').required = t==='email';
+  document.querySelector('#tab-phone input').required = t==='phone';
+}
+function fmtPhone(el){
+  let v=el.value.replace(/\\D/g,'');
+  if(v.length>6) v=v.slice(0,3)+'-'+v.slice(3,6)+'-'+v.slice(6,10);
+  else if(v.length>3) v=v.slice(0,3)+'-'+v.slice(3);
+  el.value=v;
+}
+</script>''' if not is_login else ''
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>StockScout — {title}</title>
-<style>{_PAGE_CSS}</style></head><body>
+<style>{_PAGE_CSS}{extra_css}</style></head><body>
 <div class="box">
   <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
   <h2>{title}</h2>
@@ -304,21 +334,25 @@ def auth_page(mode='login', error=''):
   </form>
   <div class="switch">{switch_text} <a href="{switch_link}">{switch_label}</a></div>
 </div>
+{extra_js}
 </body></html>'''
 
 # ── Verify page HTML ──────────────────────────────────────────────────────────
 def verify_page(token, contact, error='', show_code=None):
-    via      = 'email' if '@' in contact else 'text message'
-    masked   = contact[:3] + '***' + contact[contact.index('@'):] if '@' in contact \
-               else contact[:3] + '***' + contact[-2:]
+    is_ph    = is_phone(contact)
+    masked   = contact[:3] + '***' + contact[contact.index('@'):] if not is_ph \
+               else contact[:3] + '-***-' + contact[-4:]
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
-    # If no SMS/email provider is configured, show the code directly on screen
     code_hint = ''
     if show_code:
-        code_hint = f'<div class="ok">📬 No SMS provider set up yet — here is your code: <strong style="font-size:1.2rem;letter-spacing:.15em">{show_code}</strong></div>'
-        sent_msg  = '<p class="sub">Enter the code below to finish creating your account.</p>'
+        if is_ph:
+            code_hint = f'<div class="ok">Your verification code is: <strong style="font-size:1.3rem;letter-spacing:.2em">{show_code}</strong></div>'
+            sent_msg  = f'<p class="sub">Phone: <strong style="color:#e2e8f0">{htmllib.escape(contact)}</strong></p>'
+        else:
+            code_hint = f'<div class="ok">📬 Email not configured yet — your code is: <strong style="font-size:1.2rem;letter-spacing:.15em">{show_code}</strong></div>'
+            sent_msg  = '<p class="sub">Enter the code below to finish creating your account.</p>'
     else:
-        sent_msg  = f'<p class="sub">We sent a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>'
+        sent_msg  = f'<p class="sub">We emailed a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>'
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -1322,32 +1356,42 @@ class Handler(BaseHTTPRequestHandler):
         path   = self.path.split('?')[0]
 
         if path == '/signup':
-            name    = params.get('name','').strip()
-            contact = params.get('contact','').strip()
-            pw      = params.get('password','')
+            name  = params.get('name','').strip()
+            email = params.get('email','').strip().lower()
+            phone = params.get('phone','').strip()
+            pw    = params.get('password','')
+            # Determine which contact method was used
+            if email:
+                contact = email
+            elif phone:
+                contact = phone
+            else:
+                contact = ''
             if not name or not contact or not pw:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'All fields are required.'))
                 return
             if len(pw) < 6:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
                 return
-            # Normalise phone numbers
-            if is_phone(contact):
-                contact = normalize_phone(contact)
-            else:
-                contact = contact.lower()
-            # Create pending record and send code
+            # Validate format
+            if phone and not is_phone(phone):
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Phone must be in 555-867-5309 format (10 digits with dashes).'))
+                return
+            if email and not is_email(email):
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Please enter a valid email address.'))
+                return
+            # Create pending and send/show code
             token, code = create_pending(name, contact, pw)
             if is_phone(contact):
-                sent = send_sms_code(contact, code)
+                # Always show code on screen for phone — no SMS required
+                self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=code))
             else:
                 sent = send_email_code(contact, code, name)
-            # sent=True → code delivered, sent=None → no provider configured (show on screen), sent=False → error
-            if sent is False:
-                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification code. Please try again.'))
-                return
-            show = code if sent is None else None
-            self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=show))
+                show = code if sent is None else None
+                if sent is False:
+                    self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification email. Please try again.'))
+                    return
+                self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=show))
 
         elif path == '/verify':
             token = params.get('token','').strip()
