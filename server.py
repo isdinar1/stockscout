@@ -8,7 +8,8 @@ Run: python3 server.py
 """
 import json, re, os, time, io, urllib.request, urllib.parse, html as htmllib
 import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets, hmac, base64
-import http.cookies
+import http.cookies, smtplib, random
+from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import warnings
 warnings.filterwarnings('ignore')
@@ -84,38 +85,39 @@ def _verify(pw, stored):
     except:
         return False
 
-def create_user(email, name, pw):
-    """Insert user. Returns (id, name) or None if email taken."""
+def create_user(contact, name, pw, pw_hash=None):
+    """Insert user. Returns (id, name) or None if contact already exists."""
+    hashed = pw_hash if pw_hash else _hash(pw)
     conn, pg = _get_conn()
     ph = _ph(pg)
     try:
         if pg:
             cur = conn.cursor()
             cur.execute(f'INSERT INTO users (email,name,pw) VALUES ({ph},{ph},{ph}) RETURNING id',
-                        (email.lower(), name, _hash(pw)))
+                        (contact, name, hashed))
             uid = cur.fetchone()[0]
         else:
             cur = conn.execute(f'INSERT INTO users (email,name,pw) VALUES ({ph},{ph},{ph})',
-                               (email.lower(), name, _hash(pw)))
+                               (contact, name, hashed))
             uid = cur.lastrowid
         conn.commit()
         return (uid, name)
     except Exception:
-        return None  # email already exists
+        return None
     finally:
         conn.close()
 
-def check_user(email, pw):
+def check_user(contact, pw):
     """Returns (id, name) if credentials valid, else None."""
     conn, pg = _get_conn()
     ph = _ph(pg)
     try:
         if pg:
             cur = conn.cursor()
-            cur.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (email.lower(),))
+            cur.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (contact,))
             row = cur.fetchone()
         else:
-            row = conn.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (email.lower(),)).fetchone()
+            row = conn.execute(f'SELECT id,name,pw FROM users WHERE email={ph}', (contact,)).fetchone()
         if row and _verify(pw, row[2]):
             return (row[0], row[1])
         return None
@@ -157,6 +159,110 @@ def get_cookie(headers):
     jar = http.cookies.SimpleCookie(raw)
     return jar['session'].value if 'session' in jar else None
 
+# ── Verification codes (stored in memory, expire in 10 min) ──────────────────
+_pending = {}  # token -> {name, contact, contact_type, pw, code, expires}
+
+def is_phone(s):
+    digits = re.sub(r'\D', '', s)
+    return len(digits) >= 10 and not '@' in s
+
+def normalize_phone(s):
+    digits = re.sub(r'\D', '', s)
+    if len(digits) == 10: digits = '1' + digits
+    return '+' + digits
+
+def create_pending(name, contact, pw):
+    """Store pending signup with a 6-digit code. Returns (token, code)."""
+    # Clean up expired entries
+    now = time.time()
+    for k in list(_pending.keys()):
+        if _pending[k]['expires'] < now:
+            del _pending[k]
+    code  = str(random.randint(100000, 999999))
+    token = secrets.token_hex(16)
+    _pending[token] = {
+        'name':    name,
+        'contact': contact,
+        'type':    'phone' if is_phone(contact) else 'email',
+        'pw':      _hash(pw),
+        'code':    code,
+        'expires': now + 600,  # 10 minutes
+    }
+    return token, code
+
+def send_email_code(to_email, code, name):
+    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_EMAIL', '')
+    smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+    if not smtp_user or not smtp_pass:
+        print(f'  [verify] No SMTP configured. Code for {to_email}: {code}')
+        return True  # dev mode — code printed to console
+    try:
+        msg = MIMEText(
+            f'Hi {name},\n\nYour StockScout verification code is:\n\n'
+            f'  {code}\n\nThis code expires in 10 minutes.\n\n— StockScout'
+        )
+        msg['Subject'] = f'Your StockScout code: {code}'
+        msg['From']    = smtp_user
+        msg['To']      = to_email
+        with smtplib.SMTP(smtp_host, smtp_port) as s:
+            s.starttls()
+            s.login(smtp_user, smtp_pass)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f'  [verify] Email send failed: {e}')
+        return False
+
+def send_sms_code(to_phone, code):
+    sid   = os.environ.get('TWILIO_SID', '')
+    token = os.environ.get('TWILIO_TOKEN', '')
+    from_ = os.environ.get('TWILIO_PHONE', '')
+    if not sid or not token or not from_:
+        print(f'  [verify] No Twilio configured. Code for {to_phone}: {code}')
+        return True  # dev mode
+    try:
+        data = urllib.parse.urlencode({
+            'From': from_, 'To': to_phone,
+            'Body': f'Your StockScout code is: {code}  (expires in 10 min)',
+        }).encode()
+        creds = base64.b64encode(f'{sid}:{token}'.encode()).decode()
+        req = urllib.request.Request(
+            f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',
+            data=data, method='POST',
+            headers={'Authorization': f'Basic {creds}',
+                     'Content-Type': 'application/x-www-form-urlencoded'}
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status in (200, 201)
+    except Exception as e:
+        print(f'  [verify] SMS send failed: {e}')
+        return False
+
+# ── Shared page CSS ───────────────────────────────────────────────────────────
+_PAGE_CSS = '''
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{background:#07090f;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}
+.box{background:#0f1623;border:1px solid #1c2a40;border-radius:18px;padding:40px 44px;width:100%;max-width:420px}
+.logo{text-align:center;margin-bottom:28px}
+.logo h1{font-size:1.5rem;font-weight:800;color:#fff}
+.logo p{color:#4b5e78;font-size:.85rem;margin-top:4px}
+h2{font-size:1.1rem;font-weight:700;margin-bottom:8px;color:#fff}
+.sub{color:#4b5e78;font-size:.82rem;margin-bottom:22px}
+.field{margin-bottom:16px}
+.field label{display:block;font-size:.78rem;color:#64748b;margin-bottom:6px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}
+.field input{width:100%;background:#07090f;border:1px solid #1c2a40;border-radius:9px;color:#e2e8f0;font-size:.9rem;padding:11px 14px;outline:none;transition:border-color .2s}
+.field input:focus{border-color:#3b82f6}
+.btn{width:100%;background:linear-gradient(135deg,#1d4ed8,#1e40af);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.95rem;font-weight:700;padding:13px;margin-top:6px;transition:opacity .2s}
+.btn:hover{opacity:.88}
+.switch{text-align:center;margin-top:20px;font-size:.82rem;color:#4b5e78}
+.switch a{color:#60a5fa;text-decoration:none;font-weight:600}
+.err{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#fca5a5;font-size:.82rem;padding:10px 14px;margin-bottom:16px}
+.ok{background:rgba(16,185,129,.08);border:1px solid rgba(16,185,129,.25);border-radius:8px;color:#34d399;font-size:.82rem;padding:10px 14px;margin-bottom:16px}
+.code-input{font-size:1.6rem;letter-spacing:.3em;text-align:center;font-weight:800}
+'''
+
 # ── Auth page HTML ────────────────────────────────────────────────────────────
 def auth_page(mode='login', error=''):
     is_login = mode == 'login'
@@ -168,48 +274,65 @@ def auth_page(mode='login', error=''):
     name_field = '' if is_login else '''
       <div class="field">
         <label>Your name</label>
-        <input type="text" name="name" placeholder="John Smith" required />
+        <input type="text" name="name" placeholder="John Smith" required autocomplete="name"/>
+      </div>'''
+    contact_field = '''
+      <div class="field">
+        <label>Email</label>
+        <input type="email" name="contact" placeholder="you@example.com" required autocomplete="email"/>
+      </div>''' if is_login else '''
+      <div class="field">
+        <label>Email or Phone number</label>
+        <input type="text" name="contact" placeholder="you@example.com  or  +1 555 000 0000" required autocomplete="email"/>
       </div>'''
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>StockScout — {title}</title>
-<style>
-*,*::before,*::after{{box-sizing:border-box;margin:0;padding:0}}
-body{{background:#07090f;color:#e2e8f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center}}
-.box{{background:#0f1623;border:1px solid #1c2a40;border-radius:18px;padding:40px 44px;width:100%;max-width:420px}}
-.logo{{text-align:center;margin-bottom:28px}}
-.logo h1{{font-size:1.5rem;font-weight:800;color:#fff}}
-.logo p{{color:#4b5e78;font-size:.85rem;margin-top:4px}}
-h2{{font-size:1.1rem;font-weight:700;margin-bottom:22px;color:#fff}}
-.field{{margin-bottom:16px}}
-.field label{{display:block;font-size:.78rem;color:#64748b;margin-bottom:6px;font-weight:600;letter-spacing:.04em;text-transform:uppercase}}
-.field input{{width:100%;background:#07090f;border:1px solid #1c2a40;border-radius:9px;color:#e2e8f0;font-size:.9rem;padding:11px 14px;outline:none;transition:border-color .2s}}
-.field input:focus{{border-color:#3b82f6}}
-.btn{{width:100%;background:linear-gradient(135deg,#1d4ed8,#1e40af);border:none;border-radius:10px;color:#fff;cursor:pointer;font-size:.95rem;font-weight:700;padding:13px;margin-top:6px;transition:opacity .2s}}
-.btn:hover{{opacity:.88}}
-.switch{{text-align:center;margin-top:20px;font-size:.82rem;color:#4b5e78}}
-.switch a{{color:#60a5fa;text-decoration:none;font-weight:600}}
-.err{{background:rgba(239,68,68,.1);border:1px solid rgba(239,68,68,.3);border-radius:8px;color:#fca5a5;font-size:.82rem;padding:10px 14px;margin-bottom:16px}}
-</style></head><body>
+<style>{_PAGE_CSS}</style></head><body>
 <div class="box">
   <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
   <h2>{title}</h2>
   {err_html}
   <form method="POST" action="{action}">
     {name_field}
-    <div class="field">
-      <label>Email</label>
-      <input type="email" name="email" placeholder="you@example.com" required />
-    </div>
+    {contact_field}
     <div class="field">
       <label>Password</label>
-      <input type="password" name="password" placeholder="••••••••" required minlength="6" />
+      <input type="password" name="password" placeholder="••••••••" required minlength="6" autocomplete="{'current-password' if is_login else 'new-password'}"/>
     </div>
     <button class="btn" type="submit">{title}</button>
   </form>
   <div class="switch">{switch_text} <a href="{switch_link}">{switch_label}</a></div>
+</div>
+</body></html>'''
+
+# ── Verify page HTML ──────────────────────────────────────────────────────────
+def verify_page(token, contact, error=''):
+    masked = contact if '@' in contact else contact[:3] + '***' + contact[-2:]
+    via    = 'email' if '@' in contact else 'text message'
+    err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
+    return f'''<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>StockScout — Verify</title>
+<style>{_PAGE_CSS}</style></head><body>
+<div class="box">
+  <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
+  <h2>Check your {via}</h2>
+  <p class="sub">We sent a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>
+  {err_html}
+  <form method="POST" action="/verify">
+    <input type="hidden" name="token" value="{htmllib.escape(token)}"/>
+    <div class="field">
+      <label>Verification code</label>
+      <input class="code-input" type="text" name="code" placeholder="000000"
+             maxlength="6" pattern="[0-9]{{6}}" inputmode="numeric" required autofocus/>
+    </div>
+    <button class="btn" type="submit">Verify &amp; Create Account</button>
+  </form>
+  <div class="switch"><a href="/signup">← Use a different email or number</a></div>
 </div>
 </body></html>'''
 
@@ -1144,6 +1267,9 @@ class Handler(BaseHTTPRequestHandler):
             mode = 'login' if path == '/login' else 'signup'
             self._send(200, 'text/html; charset=utf-8', auth_page(mode))
 
+        elif path == '/verify':
+            self._redirect('/signup')  # GET verify → back to signup
+
         elif path == '/logout':
             self._redirect('/login', clear_cookie=True)
 
@@ -1189,32 +1315,64 @@ class Handler(BaseHTTPRequestHandler):
         path   = self.path.split('?')[0]
 
         if path == '/signup':
-            name  = params.get('name','').strip()
-            email = params.get('email','').strip()
-            pw    = params.get('password','')
-            if not name or not email or not pw:
+            name    = params.get('name','').strip()
+            contact = params.get('contact','').strip()
+            pw      = params.get('password','')
+            if not name or not contact or not pw:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'All fields are required.'))
                 return
             if len(pw) < 6:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
                 return
-            result = create_user(email, name, pw)
+            # Normalise phone numbers
+            if is_phone(contact):
+                contact = normalize_phone(contact)
+            else:
+                contact = contact.lower()
+            # Create pending record and send code
+            token, code = create_pending(name, contact, pw)
+            if is_phone(contact):
+                ok = send_sms_code(contact, code)
+            else:
+                ok = send_email_code(contact, code, name)
+            if not ok:
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification code. Check your email/number and try again.'))
+                return
+            self._send(200, 'text/html; charset=utf-8', verify_page(token, contact))
+
+        elif path == '/verify':
+            token = params.get('token','').strip()
+            code  = params.get('code','').strip()
+            p     = _pending.get(token)
+            if not p:
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Code expired. Please sign up again.'))
+                return
+            if time.time() > p['expires']:
+                del _pending[token]
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Code expired. Please sign up again.'))
+                return
+            if code != p['code']:
+                self._send(200, 'text/html; charset=utf-8', verify_page(token, p['contact'], 'Incorrect code — try again.'))
+                return
+            # Code correct — create the account
+            del _pending[token]
+            result = create_user(p['contact'], p['name'], None, pw_hash=p['pw'])
             if not result:
-                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'An account with that email already exists.'))
+                self._send(200, 'text/html; charset=utf-8', auth_page('login', 'An account with that email/number already exists. Please sign in.'))
                 return
             uid, uname = result
-            token = new_session(uid, uname)
+            sess = new_session(uid, uname)
             self.send_response(302)
             self.send_header('Location', '/')
-            self.send_header('Set-Cookie', self._cookie_header(token))
+            self.send_header('Set-Cookie', self._cookie_header(sess))
             self.end_headers()
 
         elif path == '/login':
-            email = params.get('email','').strip()
-            pw    = params.get('password','')
-            result = check_user(email, pw)
+            contact = params.get('contact','').strip().lower()
+            pw      = params.get('password','')
+            result  = check_user(contact, pw)
             if not result:
-                self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Incorrect email or password.'))
+                self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Incorrect email/number or password.'))
                 return
             uid, uname = result
             token = new_session(uid, uname)
