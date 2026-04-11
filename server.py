@@ -49,11 +49,12 @@ def _verify(pw, stored):
 def create_user(email, name, pw):
     try:
         c = sqlite3.connect(DB)
-        c.execute('INSERT INTO users (email, name, pw) VALUES (?,?,?)', (email.lower(), name, _hash(pw)))
+        cur = c.execute('INSERT INTO users (email, name, pw) VALUES (?,?,?)', (email.lower(), name, _hash(pw)))
+        uid = cur.lastrowid
         c.commit(); c.close()
-        return True
+        return uid  # return the new user's id directly
     except sqlite3.IntegrityError:
-        return False  # email already exists
+        return None  # email already exists
 
 def check_user(email, pw):
     c = sqlite3.connect(DB)
@@ -1028,14 +1029,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(pw) < 6:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
                 return
-            if not create_user(email, name, pw):
+            uid = create_user(email, name, pw)
+            if not uid:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'An account with that email already exists.'))
                 return
-            uid   = check_user(email, pw)
             token = new_session(uid)
             self.send_response(302)
             self.send_header('Location', '/')
-            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly')
+            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax')
             self.end_headers()
 
         elif path == '/login':
@@ -1048,7 +1049,7 @@ class Handler(BaseHTTPRequestHandler):
             token = new_session(uid)
             self.send_response(302)
             self.send_header('Location', '/')
-            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly')
+            self.send_header('Set-Cookie', f'session={token}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax')
             self.end_headers()
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
