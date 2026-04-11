@@ -196,8 +196,7 @@ def send_email_code(to_email, code, name):
     smtp_user = os.environ.get('SMTP_EMAIL', '')
     smtp_pass = os.environ.get('SMTP_PASSWORD', '')
     if not smtp_user or not smtp_pass:
-        print(f'  [verify] No SMTP configured. Code for {to_email}: {code}')
-        return True  # dev mode — code printed to console
+        return None  # signal: no provider configured, show code on screen
     try:
         msg = MIMEText(
             f'Hi {name},\n\nYour StockScout verification code is:\n\n'
@@ -220,8 +219,7 @@ def send_sms_code(to_phone, code):
     token = os.environ.get('TWILIO_TOKEN', '')
     from_ = os.environ.get('TWILIO_PHONE', '')
     if not sid or not token or not from_:
-        print(f'  [verify] No Twilio configured. Code for {to_phone}: {code}')
-        return True  # dev mode
+        return None  # signal: no provider configured, show code on screen
     try:
         data = urllib.parse.urlencode({
             'From': from_, 'To': to_phone,
@@ -238,7 +236,7 @@ def send_sms_code(to_phone, code):
             return r.status in (200, 201)
     except Exception as e:
         print(f'  [verify] SMS send failed: {e}')
-        return False
+        return None
 
 # ── Shared page CSS ───────────────────────────────────────────────────────────
 _PAGE_CSS = '''
@@ -309,10 +307,18 @@ def auth_page(mode='login', error=''):
 </body></html>'''
 
 # ── Verify page HTML ──────────────────────────────────────────────────────────
-def verify_page(token, contact, error=''):
-    masked = contact if '@' in contact else contact[:3] + '***' + contact[-2:]
-    via    = 'email' if '@' in contact else 'text message'
+def verify_page(token, contact, error='', show_code=None):
+    via      = 'email' if '@' in contact else 'text message'
+    masked   = contact[:3] + '***' + contact[contact.index('@'):] if '@' in contact \
+               else contact[:3] + '***' + contact[-2:]
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
+    # If no SMS/email provider is configured, show the code directly on screen
+    code_hint = ''
+    if show_code:
+        code_hint = f'<div class="ok">📬 No SMS provider set up yet — here is your code: <strong style="font-size:1.2rem;letter-spacing:.15em">{show_code}</strong></div>'
+        sent_msg  = '<p class="sub">Enter the code below to finish creating your account.</p>'
+    else:
+        sent_msg  = f'<p class="sub">We sent a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>'
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -320,8 +326,9 @@ def verify_page(token, contact, error=''):
 <style>{_PAGE_CSS}</style></head><body>
 <div class="box">
   <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
-  <h2>Check your {via}</h2>
-  <p class="sub">We sent a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>
+  <h2>One more step</h2>
+  {sent_msg}
+  {code_hint}
   {err_html}
   <form method="POST" action="/verify">
     <input type="hidden" name="token" value="{htmllib.escape(token)}"/>
@@ -1332,13 +1339,15 @@ class Handler(BaseHTTPRequestHandler):
             # Create pending record and send code
             token, code = create_pending(name, contact, pw)
             if is_phone(contact):
-                ok = send_sms_code(contact, code)
+                sent = send_sms_code(contact, code)
             else:
-                ok = send_email_code(contact, code, name)
-            if not ok:
-                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification code. Check your email/number and try again.'))
+                sent = send_email_code(contact, code, name)
+            # sent=True → code delivered, sent=None → no provider configured (show on screen), sent=False → error
+            if sent is False:
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification code. Please try again.'))
                 return
-            self._send(200, 'text/html; charset=utf-8', verify_page(token, contact))
+            show = code if sent is None else None
+            self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=show))
 
         elif path == '/verify':
             token = params.get('token','').strip()
