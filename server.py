@@ -20,9 +20,22 @@ import pdfplumber
 # Users (email+pw) are stored in SQLite only for login verification.
 DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'users.db')
 
-# Secret for signing session tokens. Set SESSION_SECRET env var in Railway so it
-# persists across redeploys. Falls back to a random value (sessions reset on restart).
-SESSION_SECRET = os.environ.get('SESSION_SECRET', secrets.token_hex(32))
+# Secret for signing session tokens.
+# Priority: SESSION_SECRET env var (set this in Railway) → .secret file → generate+save one.
+def _load_secret():
+    if os.environ.get('SESSION_SECRET'):
+        return os.environ['SESSION_SECRET']
+    _sf = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.session_secret')
+    if os.path.exists(_sf):
+        return open(_sf).read().strip()
+    s = secrets.token_hex(32)
+    try:
+        open(_sf, 'w').write(s)
+    except Exception:
+        pass
+    return s
+
+SESSION_SECRET = _load_secret()
 
 def init_db():
     c = sqlite3.connect(DB)
