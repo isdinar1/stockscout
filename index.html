@@ -133,7 +133,7 @@
 <div class="wrap" id="wrap"></div>
 
 <script>
-const API = 'http://localhost:8080';
+const API = window.location.port === '8080' ? 'http://localhost:8080' : '';
 
 const STEPS = [
   'Reading today\'s top financial news…',
