@@ -16,6 +16,14 @@ warnings.filterwarnings('ignore')
 import yfinance as yf
 import pdfplumber
 
+# ── Live progress log (streamed to frontend during scan) ─────────────────────
+_progress = []   # list of message strings for the current scan
+_scan_done = False
+
+def _log(msg):
+    print(msg)
+    _progress.append(msg)
+
 # ── Auth / Database ───────────────────────────────────────────────────────────
 # Sessions use HMAC-signed cookies — no DB lookup needed, survives server restarts.
 # Users (email+pw) are stored in SQLite only for login verification.
@@ -705,7 +713,7 @@ def get_congress_trades(max_ptrs=40):
     if _congress_cache is not None and time.time() - _congress_ts < 43200:
         return _congress_cache
 
-    print('  [congress] Fetching House PTR index...')
+    _log('📂  Downloading House disclosure index (2026FD.zip)...')
     try:
         req = urllib.request.Request(
             'https://disclosures-clerk.house.gov/public_disc/financial-pdfs/2026FD.zip',
@@ -716,23 +724,23 @@ def get_congress_trades(max_ptrs=40):
         zf   = zipfile.ZipFile(io.BytesIO(zdata))
         root = ET.fromstring(zf.read('2026FD.xml'))
     except Exception as e:
-        print(f'  [congress] index fetch failed: {e}')
+        _log(f'⚠️  Could not reach House disclosure system: {e}')
         _congress_cache = {}
         return {}
 
-    # Get most-recent PTR filings (P = Periodic Transaction Report = stock trades)
     ptrs = [(m.findtext('Last',''), m.findtext('First',''), m.findtext('DocID',''), m.findtext('FilingDate',''))
             for m in root.findall('.//Member') if m.findtext('FilingType') == 'P']
     ptrs.sort(key=lambda x: x[3], reverse=True)
     ptrs = ptrs[:max_ptrs]
-    print(f'  [congress] Fetching {len(ptrs)} recent PTR PDFs...')
+    _log(f'📄  Reading {len(ptrs)} recent trade disclosure PDFs...')
 
     leg_map = get_legislators_map()
 
     ticker_trades = {}
-    for last, first, doc_id, filed in ptrs:
+    for idx, (last, first, doc_id, filed) in enumerate(ptrs):
         member = f'{first} {last}'
         photo  = member_photo_url(member, leg_map)
+        _log(f'📄  [{idx+1}/{len(ptrs)}] Reading {member}\'s disclosure ({filed})...')
         try:
             req2 = urllib.request.Request(
                 f'https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/{doc_id}.pdf',
@@ -1142,38 +1150,44 @@ def news_sentiment(headlines):
 # ── Main research pipeline ────────────────────────────────────────────────────
 
 def run_research():
-    # ── Step 1: Fetch congress trades (our starting point) ────────────────────
-    print('\n🏛️  Fetching Congress trades...')
+    global _progress, _scan_done
+    _progress = []
+    _scan_done = False
+
+    # ── Step 1: Fetch congress trades ────────────────────────────────────────
+    _log('🏛️  Connecting to House of Representatives disclosure system...')
     congress_data = get_congress_trades(max_ptrs=40)
 
-    # Get stocks congress is BUYING, sorted by number of distinct buyers
     buy_stocks = []
     for sym, trades in congress_data.items():
         buyers = [t for t in trades if t['type'] == 'Buy']
         if buyers:
             buy_stocks.append((sym, buyers))
     buy_stocks.sort(key=lambda x: len({t['name'] for t in x[1]}), reverse=True)
-    print(f'  → {len(buy_stocks)} stocks being bought by Congress')
 
     if not buy_stocks:
-        print('  [warn] No congress trades found')
-        buy_stocks = []
+        _log('⚠️  No recent congress trades found — retrying with broader search...')
+    else:
+        names_preview = list({t['name'] for _, trades in buy_stocks[:5] for t in trades})[:4]
+        _log(f'✅  Found {len(buy_stocks)} stocks being bought by Congress members')
+        _log(f'👥  Including: {", ".join(names_preview)}')
 
-    # Take top 15 congress-bought stocks
     top_congress = buy_stocks[:15]
     congress_symbols = [s for s, _ in top_congress]
 
-    # ── Step 2: Fetch price data for all congress-bought stocks ───────────────
-    print(f'  → Fetching price data for {len(congress_symbols)} stocks...')
+    # ── Step 2: Fetch live price data ────────────────────────────────────────
+    _log(f'📈  Fetching live price data for {len(congress_symbols)} stocks: {", ".join(congress_symbols[:8])}{"…" if len(congress_symbols)>8 else ""}')
     chart_cache = batch_fetch(congress_symbols) if congress_symbols else {}
+    _log(f'✅  Got price history for {len(chart_cache)} stocks')
 
-    # ── Step 3: Enrich with company name + market cap ─────────────────────────
+    # ── Step 3: Enrich with company names + market caps ───────────────────────
+    _log('🏢  Looking up company names and market caps...')
     enriched = enrich_top(congress_symbols)
 
-    # ── Step 4: For each stock, fetch news and score ───────────────────────────
-    print('  → Fetching news for each stock...')
+    # ── Step 4: Fetch news for each stock and score ───────────────────────────
+    _log(f'📰  Scanning news for each stock ({len(top_congress)} total)...')
     results = []
-    for sym, buyers in top_congress:
+    for i, (sym, buyers) in enumerate(top_congress):
         ch = chart_cache.get(sym)
         if not ch:
             continue
@@ -1190,6 +1204,7 @@ def run_research():
 
         buyer_names = list({t['name'] for t in buyers})
         n_buyers    = len(buyer_names)
+        _log(f'📰  [{i+1}/{len(top_congress)}] Searching news for {comp_name} (${sym}) — bought by {", ".join(buyer_names[:2])}{"+" if n_buyers>2 else ""}...')
 
         # Fetch news specific to this stock
         headlines = fetch_stock_news(sym, comp_name)
@@ -1249,6 +1264,11 @@ def run_research():
         })
 
     results.sort(key=lambda x: -x['score'])
+
+    strong = sum(1 for r in results if r['signal'] == 'Strong Setup')
+    _log(f'🎯  Ranking complete — {len(results)} picks found ({strong} strong setups)')
+    _log(f'✅  Done! Showing results now...')
+    _scan_done = True
 
     return [{
         'themeId':    'congress_buying',
@@ -1330,18 +1350,27 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, 'text/html; charset=utf-8', html)
 
+        elif path == '/progress':
+            uid, _ = self._authed()
+            if not uid:
+                self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
+                return
+            self._send(200, 'application/json', json.dumps({
+                'messages': _progress,
+                'done': _scan_done,
+            }))
+
         elif path == '/scan':
             uid, _ = self._authed()
             if not uid:
                 self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
                 return
-            print('\n🔍 Scan started...')
             t0 = time.time()
             try:
                 results  = run_research()
                 elapsed  = round(time.time() - t0, 1)
                 n_stocks = sum(len(g['stocks']) for g in results)
-                print(f'✅ Done in {elapsed}s — {len(results)} themes, {n_stocks} picks\n')
+                print(f'✅ Done in {elapsed}s — {n_stocks} picks\n')
                 self._send(200, 'application/json', json.dumps(results))
             except Exception as e:
                 import traceback; traceback.print_exc()

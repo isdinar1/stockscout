@@ -59,12 +59,18 @@
     .wrap { max-width:880px; margin:40px auto 80px; padding:0 20px; }
 
     /* Loader */
-    .loader { text-align:center; padding:70px 20px; }
-    .ring { width:48px; height:48px; border:3px solid var(--border); border-top-color:var(--accent); border-radius:50%; animation:spin .8s linear infinite; margin:0 auto 20px; }
+    .loader { max-width:620px; margin:50px auto; padding:0 20px; }
+    .loader-hd { display:flex; align-items:center; gap:14px; margin-bottom:24px; }
+    .ring { width:36px; height:36px; border:3px solid rgba(220,38,38,.2); border-top-color:#ef4444; border-radius:50%; animation:spin .7s linear infinite; flex-shrink:0; }
     @keyframes spin { to { transform:rotate(360deg); } }
-    .loader h3 { font-size:1rem; font-weight:600; margin-bottom:10px; }
-    .steps span { display:block; color:var(--muted); font-size:.83rem; line-height:2.1; opacity:.4; transition:opacity .4s; }
-    .steps span.active { opacity:1; color:var(--a2); }
+    .loader-hd h3 { font-size:1rem; font-weight:700; color:#fff; }
+    .loader-hd p  { color:var(--muted); font-size:.8rem; margin-top:2px; }
+    .progress-log { background:rgba(0,0,0,.45); border:1px solid rgba(220,38,38,.2); border-radius:12px; padding:16px 18px; max-height:340px; overflow-y:auto; display:flex; flex-direction:column; gap:6px; }
+    .progress-log::-webkit-scrollbar { width:4px; }
+    .progress-log::-webkit-scrollbar-thumb { background:rgba(220,38,38,.3); border-radius:4px; }
+    .pline { font-size:.8rem; color:#94a3b8; line-height:1.5; animation:rise .2s ease; }
+    .pline.new { color:#e2e8f0; }
+    .pline.done { color:#34d399; font-weight:600; }
 
     /* Theme block */
     .theme-block { margin-bottom:40px; }
@@ -281,59 +287,78 @@
 
 const API = window.location.port === '8080' ? 'http://localhost:8080' : '';
 
-const STEPS = [
-  'Reading today\'s top financial news…',
-  'Detecting major themes (oil, geopolitics, rates, AI…)',
-  'Mapping themes to affected sectors…',
-  'Finding small/mid-cap stocks in each sector…',
-  'Checking 52-week ranges, RSI, volume spikes…',
-  'Filtering out stocks that already moved…',
-  'Ranking by upside potential…',
-];
+let progressTimer = null;
+let lastMsgCount  = 0;
 
-let stepTimer;
-function startSteps() {
-  let i = 0;
-  const els = document.querySelectorAll('.steps span');
-  if (!els.length) return;
-  els[0].classList.add('active');
-  stepTimer = setInterval(() => {
-    if (i < els.length - 1) {
-      els[i].classList.remove('active');
-      els[++i].classList.add('active');
+function showLoader() {
+  document.getElementById('wrap').innerHTML = `
+    <div class="loader">
+      <div class="loader-hd">
+        <div class="ring"></div>
+        <div>
+          <h3>Scanning Congress disclosures &amp; news…</h3>
+          <p id="loader-sub">Connecting to House disclosure system…</p>
+        </div>
+      </div>
+      <div class="progress-log" id="plog"></div>
+    </div>`;
+}
+
+function addLine(msg, cls='pline') {
+  const log = document.getElementById('plog');
+  if (!log) return;
+  const d = document.createElement('div');
+  d.className = cls;
+  d.textContent = msg;
+  log.appendChild(d);
+  log.scrollTop = log.scrollHeight;
+  // Flash new lines bright then dim
+  setTimeout(() => d.classList.remove('new'), 1200);
+}
+
+async function pollProgress() {
+  try {
+    const r = await fetch(`${API}/progress`);
+    if (!r.ok) return;
+    const data = await r.json();
+    const msgs = data.messages || [];
+    // Add any new messages since last poll
+    for (let i = lastMsgCount; i < msgs.length; i++) {
+      const msg = msgs[i];
+      const isDone = msg.startsWith('✅  Done');
+      addLine(msg, isDone ? 'pline done' : 'pline new');
+      const sub = document.getElementById('loader-sub');
+      if (sub) sub.textContent = msg.replace(/^[^\w]*/, '');
     }
-  }, 5000);
+    lastMsgCount = msgs.length;
+  } catch(e) {}
 }
 
 async function scan() {
   const btn = document.getElementById('btn');
-  btn.disabled = true; btn.textContent = 'Scanning news…';
-  clearInterval(stepTimer);
+  btn.disabled = true; btn.textContent = '📡 Scanning…';
+  lastMsgCount = 0;
+  showLoader();
 
-  document.getElementById('wrap').innerHTML = `
-    <div class="loader">
-      <div class="ring"></div>
-      <h3>Scanning today's news for opportunities…</h3>
-      <div class="steps">${STEPS.map(s => `<span>${s}</span>`).join('')}</div>
-    </div>`;
-
-  setTimeout(startSteps, 100);
+  // Start polling progress every 600ms
+  progressTimer = setInterval(pollProgress, 600);
 
   try {
-    const res = await fetch(`${API}/scan`, { signal: AbortSignal.timeout(150000) });
+    const res = await fetch(`${API}/scan`, { signal: AbortSignal.timeout(180000) });
+    clearInterval(progressTimer);
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     if (data.error) throw new Error(data.error);
-    render(data);
+    // Show any remaining messages then render
+    await pollProgress();
+    setTimeout(() => render(data), 400);
   } catch (e) {
+    clearInterval(progressTimer);
     document.getElementById('wrap').innerHTML = `
       <div class="err">
-        <strong>Server not running.</strong> Open a terminal and run:
-        <code>cd ~/stock-app && python3 server.py</code>
-        Then click "Find Opportunities" again.
+        <strong>Scan failed.</strong> ${e.message || 'Please try again.'}
       </div>`;
   } finally {
-    clearInterval(stepTimer);
     btn.disabled = false; btn.textContent = '📡 Find Opportunities';
   }
 }
