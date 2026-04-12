@@ -11,6 +11,7 @@ import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets, hmac, ba
 import http.cookies, smtplib, random
 from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, HTTPServer
+import socketserver
 import warnings
 warnings.filterwarnings('ignore')
 import yfinance as yf
@@ -1470,4 +1471,6 @@ if __name__ == '__main__':
     init_db()
     print(f'\n🚀 StockScout → http://localhost:{port}')
     print('   Open that URL, click "Find Opportunities"\n')
-    HTTPServer(('', port), Handler).serve_forever()
+    class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
+        daemon_threads = True
+    ThreadingHTTPServer(('', port), Handler).serve_forever()
