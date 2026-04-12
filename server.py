@@ -1197,7 +1197,7 @@ def run_research():
 
     # ── Step 1: Broad financial news ─────────────────────────────────────────
     _log('📰  Scanning financial news across multiple sources...')
-    broad_headlines = fetch_headlines()
+    broad_headlines = get_news()
     _log(f'✅  Pulled {len(broad_headlines)} headlines from news feeds')
 
     # ── Step 2: Extract tickers explicitly mentioned in headlines ────────────
