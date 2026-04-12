@@ -7,24 +7,54 @@
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
-      --bg:#07090f; --surf:#0f1623; --surf2:#161f30; --border:#1c2a40;
-      --accent:#3b82f6; --a2:#60a5fa; --green:#10b981; --g2:#34d399;
-      --red:#ef4444; --yellow:#f59e0b; --text:#e2e8f0; --muted:#4b5e78;
+      --bg:#060008; --surf:#0d0012; --surf2:#110016; --border:#2a0a30;
+      --accent:#dc2626; --a2:#f87171; --green:#10b981; --g2:#34d399;
+      --red:#ef4444; --yellow:#f59e0b; --text:#e2e8f0; --muted:#6b4a72;
     }
-    body { background:var(--bg); color:var(--text); font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; min-height:100vh; }
 
-    header { background:var(--surf); border-bottom:1px solid var(--border); padding:18px 28px; display:flex; align-items:center; gap:12px; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      min-height: 100vh;
+      overflow-x: hidden;
+    }
+
+    /* ── Radar background ── */
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background:
+        radial-gradient(circle at 50% 40%, rgba(180,0,0,.13) 0%, transparent 65%),
+        radial-gradient(circle at 50% 40%, rgba(120,0,0,.07) 0%, transparent 85%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    #radar-canvas {
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      z-index: 0;
+      opacity: .55;
+    }
+
+    header, .hero, .wrap { position: relative; z-index: 1; }
+
+    header { background:rgba(13,0,18,.85); backdrop-filter:blur(12px); border-bottom:1px solid rgba(220,38,38,.25); padding:18px 28px; display:flex; align-items:center; gap:12px; }
     header h1 { font-size:1.15rem; font-weight:700; color:#fff; }
-    .badge { background:rgba(59,130,246,.15); border:1px solid rgba(59,130,246,.3); border-radius:20px; color:var(--a2); font-size:.7rem; font-weight:700; letter-spacing:.06em; padding:3px 10px; text-transform:uppercase; }
+    .badge { background:rgba(220,38,38,.15); border:1px solid rgba(220,38,38,.4); border-radius:20px; color:#f87171; font-size:.7rem; font-weight:700; letter-spacing:.06em; padding:3px 10px; text-transform:uppercase; }
 
     .hero { max-width:700px; margin:50px auto 0; padding:0 20px; text-align:center; }
     .hero h2 { font-size:2rem; font-weight:800; line-height:1.25; margin-bottom:14px; }
-    .hero h2 em { font-style:normal; background:linear-gradient(135deg,var(--a2),var(--g2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
-    .hero p { color:#64748b; font-size:.9rem; line-height:1.8; margin-bottom:30px; }
+    .hero h2 em { font-style:normal; background:linear-gradient(135deg,#f87171,#fca5a5); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .hero p { color:#7c5c84; font-size:.9rem; line-height:1.8; margin-bottom:30px; }
 
-    .btn { background:linear-gradient(135deg,#1d4ed8,#1e40af); border:none; border-radius:12px; color:#fff; cursor:pointer; font-size:1rem; font-weight:700; padding:15px 50px; transition:all .2s; box-shadow:0 4px 24px rgba(29,78,216,.4); }
-    .btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 8px 32px rgba(29,78,216,.5); }
-    .btn:disabled { background:#1e293b; box-shadow:none; cursor:not-allowed; color:var(--muted); transform:none; }
+    .btn { background:linear-gradient(135deg,#991b1b,#7f1d1d); border:1px solid rgba(220,38,38,.5); border-radius:12px; color:#fff; cursor:pointer; font-size:1rem; font-weight:700; padding:15px 50px; transition:all .2s; box-shadow:0 4px 28px rgba(220,38,38,.45); }
+    .btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 8px 36px rgba(220,38,38,.6); background:linear-gradient(135deg,#b91c1c,#991b1b); }
+    .btn:disabled { background:#1a0520; box-shadow:none; cursor:not-allowed; color:var(--muted); transform:none; border-color:var(--border); }
 
     .wrap { max-width:880px; margin:40px auto 80px; padding:0 20px; }
 
@@ -126,6 +156,7 @@
 </head>
 <body>
 
+<canvas id="radar-canvas"></canvas>
 <header>
   <span style="font-size:1.4rem">📡</span>
   <h1>StockScout</h1>
@@ -148,6 +179,106 @@
 <div class="wrap" id="wrap"></div>
 
 <script>
+// ── Radar background animation ────────────────────────────────────────────────
+(function(){
+  const cv = document.getElementById('radar-canvas');
+  const ctx = cv.getContext('2d');
+  let W, H, cx, cy, R, angle = 0;
+  const RINGS = 5;
+  const SWEEP = Math.PI / 3;   // fade tail length
+  const BLIPS = [];
+
+  function resize(){
+    W = cv.width  = window.innerWidth;
+    H = cv.height = window.innerHeight;
+    cx = W / 2; cy = H * 0.38;
+    R  = Math.min(W, H) * 0.44;
+  }
+
+  // Random blips that appear when the sweep passes over them
+  function maybeSpawnBlip(){
+    if (BLIPS.length < 14 && Math.random() < 0.04) {
+      const a = angle + (Math.random() - 0.5) * 0.3;
+      const r = R * (0.2 + Math.random() * 0.75);
+      BLIPS.push({ x: cx + Math.cos(a)*r, y: cy + Math.sin(a)*r, life: 1 });
+    }
+  }
+
+  function draw(){
+    ctx.clearRect(0, 0, W, H);
+
+    // Concentric rings
+    for(let i = 1; i <= RINGS; i++){
+      const r = (R / RINGS) * i;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI*2);
+      ctx.strokeStyle = `rgba(180,0,0,${0.08 + i*0.03})`;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Cross-hairs
+    ctx.strokeStyle = 'rgba(180,0,0,.12)';
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(cx, cy - R); ctx.lineTo(cx, cy + R); ctx.stroke();
+
+    // Sweep gradient (trailing glow)
+    const grad = ctx.createConicalGradient
+      ? null  // fallback below for browsers without conical
+      : null;
+
+    // Draw sweep arc as filled wedge
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.arc(cx, cy, R, angle - SWEEP, angle, false);
+    ctx.closePath();
+    const sweepGrad = ctx.createLinearGradient(
+      cx + Math.cos(angle - SWEEP)*R*0.5, cy + Math.sin(angle - SWEEP)*R*0.5,
+      cx + Math.cos(angle)*R, cy + Math.sin(angle)*R
+    );
+    sweepGrad.addColorStop(0, 'rgba(200,0,0,0)');
+    sweepGrad.addColorStop(1, 'rgba(220,0,0,0.22)');
+    ctx.fillStyle = sweepGrad;
+    ctx.fill();
+    ctx.restore();
+
+    // Sweep leading edge line
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(cx, cy);
+    ctx.lineTo(cx + Math.cos(angle)*R, cy + Math.sin(angle)*R);
+    ctx.strokeStyle = 'rgba(255,60,60,.9)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(255,0,0,.8)';
+    ctx.shadowBlur = 8;
+    ctx.stroke();
+    ctx.restore();
+
+    // Blips
+    maybeSpawnBlip();
+    for(let i = BLIPS.length-1; i >= 0; i--){
+      const b = BLIPS[i];
+      b.life -= 0.012;
+      if(b.life <= 0){ BLIPS.splice(i,1); continue; }
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, 3.5, 0, Math.PI*2);
+      ctx.fillStyle = `rgba(255,80,80,${b.life * 0.9})`;
+      ctx.shadowColor = 'rgba(255,0,0,1)';
+      ctx.shadowBlur = 10;
+      ctx.fill();
+    }
+
+    angle += 0.018;
+    requestAnimationFrame(draw);
+  }
+
+  window.addEventListener('resize', resize);
+  resize();
+  draw();
+})();
+
 const API = window.location.port === '8080' ? 'http://localhost:8080' : '';
 
 const STEPS = [
