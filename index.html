@@ -72,6 +72,10 @@
     .pline.new { color:#e2e8f0; }
     .pline.done { color:#34d399; font-weight:600; }
 
+    /* Two-column hold layout */
+    .holds-grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; align-items:start; }
+    @media(max-width:700px){ .holds-grid { grid-template-columns:1fr; } }
+
     /* Theme block */
     .theme-block { margin-bottom:40px; }
     .theme-hd {
@@ -447,16 +451,18 @@ function render(themes) {
   let cardIdx = 0;
   const allStocks = [];
 
-  themes.forEach(theme => {
+  // Separate hold sections from other themes
+  const shortTheme = themes.find(t => t.themeId === 'short_hold');
+  const longTheme  = themes.find(t => t.themeId === 'long_hold');
+  const otherThemes = themes.filter(t => t.themeId !== 'short_hold' && t.themeId !== 'long_hold');
+
+  function renderThemeBlock(theme) {
     const headlineHtml = (theme.headlines || []).map(h =>
       `<div class="headline-chip">${h.slice(0, 130)}${h.length > 130 ? '…' : ''}</div>`
     ).join('');
-
     const holdClass = theme.themeId === 'short_hold' ? 'short-hold'
-                    : theme.themeId === 'long_hold'  ? 'long-hold'
-                    : '';
-
-    html += `
+                    : theme.themeId === 'long_hold'  ? 'long-hold' : '';
+    let block = `
     <div class="theme-block ${holdClass}">
       <div class="theme-hd">
         <div class="theme-top">
@@ -477,21 +483,17 @@ function render(themes) {
       const dir = s.direction === 'up'
         ? '<span class="dir-tag dir-up">↑ Long</span>'
         : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
-
       const priceStr = `<span class="price">$${s.price}</span>` +
         (s.target ? `<span class="target">→ $${s.target}${s.upsidePct ? ` (+${s.upsidePct}%)` : ''}</span>` : '');
-
       const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
         `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
-
       const holdBadge = s.holdType === 'short'
         ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
         : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
       const congressBadge = s.congressConfirmed
         ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd;margin-left:6px">🏛️ Congress Confirmed</span>'
         : '';
-
-      html += `
+      block += `
         <div class="card" style="animation-delay:${cardIdx * .07}s">
           <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${holdBadge}${congressBadge}</div>
           <div class="card-top">
@@ -505,31 +507,40 @@ function render(themes) {
             </div>
             <span class="signal ${sc}">${s.signal}</span>
           </div>
-
           ${sparkline(s.closes, cardIdx)}
-
           ${congressHtml(s.congressTrades)}
-
           <div class="bar-row">
             <span class="bar-lbl">Confidence</span>
             <div class="bar-track"><div class="bar-fill ${fc}" id="b${cardIdx}"></div></div>
             <span class="bar-num">${s.score}</span>
           </div>
-
           <div class="why">
             <div class="why-hd">Why this is a buy</div>
             <div class="why-body">${s.why}</div>
           </div>
-
           ${supportingNewsHtml(s.supportingNews)}
-
           <div class="stats">${statHtml}</div>
         </div>`;
       cardIdx++;
     });
 
-    html += `</div></div>`;
-  });
+    block += `</div></div>`;
+    return block;
+  }
+
+  // If we have both hold types, show them side by side
+  if (shortTheme && longTheme) {
+    html += `<div class="holds-grid">
+      ${renderThemeBlock(shortTheme)}
+      ${renderThemeBlock(longTheme)}
+    </div>`;
+  } else if (shortTheme) {
+    html += renderThemeBlock(shortTheme);
+  } else if (longTheme) {
+    html += renderThemeBlock(longTheme);
+  }
+
+  otherThemes.forEach(theme => { html += renderThemeBlock(theme); });
 
   html += `<p class="disc">
     ⚠️ Not financial advice. Analysis is based on public news, technical indicators, and Congressional STOCK Act disclosures.<br>
