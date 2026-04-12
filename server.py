@@ -1195,40 +1195,33 @@ def run_research():
     _progress = []
     _scan_done = False
 
-    # ── Step 1: Broad financial news ─────────────────────────────────────────
-    _log('📰  Scanning financial news across multiple sources...')
-    broad_headlines = get_news()
-    _log(f'✅  Pulled {len(broad_headlines)} headlines from news feeds')
+    # ── Step 1: Real-world news ───────────────────────────────────────────────
+    _log('🌍  Scanning world news for market-moving events...')
+    headlines = get_news()
+    _log(f'✅  Pulled {len(headlines)} headlines')
 
-    # ── Step 2: Extract tickers explicitly mentioned in headlines ────────────
-    news_tickers = extract_tickers_from_headlines(broad_headlines)
-    if news_tickers:
-        _log(f'🔍  Found {len(news_tickers)} tickers mentioned directly in headlines: {", ".join(news_tickers[:6])}{"…" if len(news_tickers)>6 else ""}')
+    # ── Step 2: Detect which themes are firing ────────────────────────────────
+    _log('🔍  Detecting active themes (tariffs, oil, ceasefire, Fed, AI...)...')
+    active_themes = detect_themes(headlines)
+    if not active_themes:
+        _log('⚠️  No strong themes detected — using broad market scan')
+    else:
+        for t, _ in active_themes:
+            _log(f'📡  Theme detected: {t["icon"]} {t["title"]}')
 
-    # ── Step 3: Trending + most-active stocks from Yahoo Finance ────────────
-    _log('📊  Fetching trending and most-active stocks from Yahoo Finance...')
-    trending = fetch_trending_tickers(max_n=20)
-    _log(f'✅  Trending stocks: {", ".join(trending[:8])}{"…" if len(trending)>8 else ""}')
+    # ── Step 3: Build candidate stock list from affected sectors ─────────────
+    seen_sym, candidates, sym_theme = set(), [], {}
+    for theme, rel_headlines in active_themes:
+        for direction in ('up', 'down'):
+            for sector in theme.get(direction, []):
+                for sym in SECTORS.get(sector, []):
+                    if sym not in seen_sym:
+                        seen_sym.add(sym)
+                        candidates.append(sym)
+                        sym_theme[sym] = (theme, direction, rel_headlines)
+    _log(f'📋  {len(candidates)} stocks identified across affected sectors: {", ".join(candidates[:10])}{"…" if len(candidates)>10 else ""}')
 
-    # Combine: news-mentioned first (more relevant), then trending, dedup
-    seen_sym, candidates = set(), []
-    for sym in news_tickers + trending:
-        if sym not in seen_sym:
-            seen_sym.add(sym)
-            candidates.append(sym)
-    candidates = candidates[:25]
-    _log(f'🔬  Total candidate pool: {len(candidates)} stocks to analyse')
-
-    # ── Step 4: Live price data ───────────────────────────────────────────────
-    _log(f'📈  Fetching live price data for {len(candidates)} stocks...')
-    chart_cache = batch_fetch(candidates) if candidates else {}
-    _log(f'✅  Got price history for {len(chart_cache)} stocks')
-
-    # ── Step 5: Company names + market caps ──────────────────────────────────
-    _log('🏢  Looking up company names and market caps...')
-    enriched = enrich_top(candidates)
-
-    # ── Step 6: Congress trades (cross-reference, not the driver) ───────────
+    # ── Step 4: Congress trades (cross-reference) ─────────────────────────────
     _log('🏛️  Loading Congressional trading disclosures (STOCK Act)...')
     congress_data = get_congress_trades(max_ptrs=40)
     congress_buyers = {}
@@ -1236,11 +1229,27 @@ def run_research():
         buyers = [t for t in trades if t['type'] == 'Buy']
         if buyers:
             congress_buyers[sym] = buyers
-    confirmed_syms = [s for s in candidates if s in congress_buyers]
-    _log(f'✅  Congress buying {len(congress_buyers)} stocks — {len(confirmed_syms)} overlap with our news picks: {", ".join(confirmed_syms[:5])}{"…" if len(confirmed_syms)>5 else ""}')
+
+    # Add any congress-bought stocks not already in our candidate pool
+    for sym in congress_buyers:
+        if sym not in seen_sym:
+            seen_sym.add(sym)
+            candidates.append(sym)
+
+    confirmed_overlap = [s for s in candidates if s in congress_buyers]
+    _log(f'✅  Congress buying {len(congress_buyers)} stocks — {len(confirmed_overlap)} overlap with news themes: {", ".join(confirmed_overlap[:5])}{"…" if len(confirmed_overlap)>5 else ""}')
+
+    # ── Step 5: Live price data ───────────────────────────────────────────────
+    _log(f'📈  Fetching price data for {len(candidates)} stocks...')
+    chart_cache = batch_fetch(candidates) if candidates else {}
+    _log(f'✅  Got price history for {len(chart_cache)} stocks')
+
+    # ── Step 6: Company names + market caps ──────────────────────────────────
+    _log('🏢  Looking up company names and market caps...')
+    enriched = enrich_top(candidates)
 
     # ── Step 7: Score every candidate ────────────────────────────────────────
-    _log(f'🔬  Scoring each stock by news sentiment + congress confirmation...')
+    _log(f'🔬  Scoring {len(chart_cache)} stocks...')
     results = []
     valid = [s for s in candidates if s in chart_cache]
     for i, sym in enumerate(valid):
@@ -1256,59 +1265,66 @@ def run_research():
         vol_r     = ch.get('vol_r', 1)
 
         congress_confirmed = sym in congress_buyers
-        tag = '🏛️ Congress confirmed' if congress_confirmed else '📰 News only'
-        _log(f'🔬  [{i+1}/{len(valid)}] {comp_name} (${sym}) — {tag}...')
+        theme_info         = sym_theme.get(sym)
+        direction          = theme_info[1] if theme_info else 'up'
 
-        # Dedicated news fetch for this stock
-        headlines       = fetch_stock_news(sym, comp_name)
-        news_score, supporting_headlines = news_sentiment(headlines)
+        tag = ('🏛️ Congress + news' if congress_confirmed else '📰 News theme')
+        _log(f'🔬  [{i+1}/{len(valid)}] {comp_name} (${sym}) — {tag}')
 
-        # Scoring: news is primary (0–40 pts), congress is a strong bonus (0–30 pts)
-        score  = 25                                   # base
-        score += min(35, max(0, news_score + 20))     # news: -10 to +35
+        # Per-stock news for sentiment
+        stock_headlines = fetch_stock_news(sym, comp_name)
+        news_score, supporting_headlines = news_sentiment(stock_headlines)
+
+        # Base score from world-news theme signal
+        score = 35
+        if direction == 'up':
+            score += 15                           # theme says this sector benefits
+        else:
+            score -= 10                           # theme says sector hurt (short signal)
+
+        score += min(20, max(-20, news_score))    # per-stock news sentiment
+
         if congress_confirmed:
             buyers      = congress_buyers[sym]
             buyer_names = list({t['name'] for t in buyers})
             n_buyers    = len(buyer_names)
-            score += min(30, n_buyers * 8)            # congress confirmation bonus
+            score += min(25, n_buyers * 8)        # congress confirmation bonus
         else:
             buyer_names, n_buyers = [], 0
-        if w52 < 0.35: score += 8                     # near 52w low
-        if rsi < 45:   score += 6                     # oversold
-        if vol_r > 1.5: score += 5                    # unusual volume
-        if chg5 < -5:  score += 4                     # recent dip = entry
+
+        if w52 < 0.35: score += 8                # near 52w low = more upside
+        if rsi < 45:   score += 6                # oversold
+        if vol_r > 1.5: score += 5               # unusual volume = attention
+        if chg5 < -5:  score += 4                # recent dip = entry point
         score = max(0, min(100, score))
 
-        # Skip very low-scoring stocks (noise)
-        if score < 30:
+        if score < 28:
             continue
 
         if   score >= 74: signal = 'Strong Setup'
         elif score >= 58: signal = 'Worth Watching'
         else:             signal = 'On Radar'
 
-        # Hold type
+        # Hold type: short = momentum/news pop; long = dip/conviction
         is_short  = (rsi >= 52 or chg5 >= 0 or news_score >= 10)
         hold_type = 'short' if is_short else 'long'
 
-        # Why text — lead with news, then congress as confirmation
-        if supporting_headlines:
-            why = f'News catalyst: "{supporting_headlines[0][:110]}"'
-        elif news_score >= 0:
-            why = f'Positive news momentum around ${sym}'
+        # Why text — world event first, then congress
+        if theme_info:
+            th = theme_info[0]
+            why = f'{th["icon"]} {th["title"]}: {th["logic"][:160]}…'
+        elif supporting_headlines:
+            why = f'News: "{supporting_headlines[0][:120]}"'
         else:
-            why = f'Mixed news — watch carefully before entering'
+            why = f'Positive news momentum around ${sym}.'
 
         if congress_confirmed:
             names_str = ', '.join(buyer_names[:3])
-            if len(buyer_names) > 3:
-                names_str += f' +{len(buyer_names)-3} more'
-            why += f'. Confirmed by Congress: {names_str} {"have" if n_buyers>1 else "has"} recently bought.'
-        else:
-            why += '. Not yet in any recent Congressional disclosures.'
+            if len(buyer_names) > 3: names_str += f' +{len(buyer_names)-3} more'
+            why += f' 🏛️ Also confirmed by Congress: {names_str} {"have" if n_buyers>1 else "has"} recently bought.'
 
         all_trades = congress_data.get(sym, [])
-        print(f'    {"🏛️" if congress_confirmed else "📰"} {sym:6s} score={score:2d} news={news_score:+d} congress={n_buyers}')
+        print(f'    {"🏛️" if congress_confirmed else "📰"} {sym:6s} score={score:2d} dir={direction} news={news_score:+d}')
 
         results.append({
             'symbol':            sym,
@@ -1322,7 +1338,7 @@ def run_research():
             'congressConfirmed': congress_confirmed,
             'capLabel':          cap_label(mc),
             'why':               why,
-            'direction':         'up',
+            'direction':         'up' if direction == 'up' else 'down',
             'closes':            closes,
             'stats': {
                 '52w pos': f'{int(w52*100)}%',
@@ -1336,49 +1352,48 @@ def run_research():
         })
 
     results.sort(key=lambda x: -x['score'])
-
     short_picks = [r for r in results if r['holdType'] == 'short']
     long_picks  = [r for r in results if r['holdType'] == 'long']
 
     confirmed_count = sum(1 for r in results if r['congressConfirmed'])
     strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')
-    _log(f'🎯  {len(results)} picks ranked — {confirmed_count} confirmed by Congress, {strong} strong setups')
+    _log(f'🎯  {len(results)} picks — {confirmed_count} Congress-confirmed, {strong} strong setups')
     _log(f'✅  Done! Showing results now...')
     _scan_done = True
 
-    themes = []
+    themes_out = []
     if short_picks:
-        themes.append({
+        themes_out.append({
             'themeId':    'short_hold',
             'themeIcon':  '⚡',
             'themeTitle': 'Short Hold — Days to Weeks',
-            'themeLogic': 'Stocks with strong news catalysts and upward momentum. '
-                          'Where Congress is also buying, that adds extra conviction. '
-                          'Best for traders looking for a near-term move.',
+            'themeLogic': 'Stocks affected by today\'s world events with upward momentum — tariff news, '
+                          'geopolitical moves, Fed signals. Where Congress is also buying, that adds conviction. '
+                          'Best for near-term catalyst plays.',
             'headlines':  [],
             'stocks':     short_picks,
         })
     if long_picks:
-        themes.append({
+        themes_out.append({
             'themeId':    'long_hold',
             'themeIcon':  '🏦',
             'themeTitle': 'Long Hold — Weeks to Months',
-            'themeLogic': 'Stocks in the news that are also oversold or pulling back. '
+            'themeLogic': 'Stocks impacted by real-world events that are oversold or pulling back. '
                           'Congressional buying on these names adds conviction for a patient entry. '
-                          'Let the trade develop over time.',
+                          'Let the trade develop as the macro story plays out.',
             'headlines':  [],
             'stocks':     long_picks,
         })
-    if not themes:
-        themes.append({
+    if not themes_out:
+        themes_out.append({
             'themeId':    'news_scan',
             'themeIcon':  '📰',
-            'themeTitle': 'News-Driven Picks',
-            'themeLogic': 'Stocks discovered through financial news and cross-referenced with Congressional disclosures.',
+            'themeTitle': 'World News Picks',
+            'themeLogic': 'Stocks identified from today\'s world events and cross-referenced with Congressional disclosures.',
             'headlines':  [],
             'stocks':     results,
         })
-    return themes
+    return themes_out
 
 # ── HTTP server ───────────────────────────────────────────────────────────────
 
