@@ -1148,6 +1148,46 @@ def news_sentiment(headlines):
             neg += 1
     return min(30, (pos - neg) * 8), supporting[:3]
 
+# ── News-first helpers ────────────────────────────────────────────────────────
+
+def fetch_trending_tickers(max_n=25):
+    """Pull trending + most-active US tickers from Yahoo Finance (no key needed)."""
+    tickers, seen = [], set()
+
+    def _add(sym):
+        if sym and '.' not in sym and '^' not in sym and sym not in seen:
+            seen.add(sym)
+            tickers.append(sym)
+
+    # Trending tickers
+    d = fetch_json('https://query1.finance.yahoo.com/v1/finance/trending/US?count=25&lang=en-US')
+    for q in (d or {}).get('finance', {}).get('result', [{}])[0].get('quotes', []):
+        _add(q.get('symbol', ''))
+
+    # Most-active screener
+    d2 = fetch_json(
+        'https://query1.finance.yahoo.com/v1/finance/screener/predefined/saved'
+        '?scrIds=most_actives&count=25&lang=en-US'
+    )
+    for q in (d2 or {}).get('finance', {}).get('result', [{}])[0].get('quotes', []):
+        _add(q.get('symbol', ''))
+
+    return tickers[:max_n]
+
+
+def extract_tickers_from_headlines(headlines):
+    """Pull explicit $TICKER mentions out of headline text."""
+    tickers, seen = [], set()
+    for h in headlines:
+        text = h.get('title', '') + ' ' + h.get('summary', '')
+        for m in re.finditer(r'\$([A-Z]{2,5})\b', text):
+            sym = m.group(1)
+            if sym not in seen:
+                seen.add(sym)
+                tickers.append(sym)
+    return tickers
+
+
 # ── Main research pipeline ────────────────────────────────────────────────────
 
 def run_research():
@@ -1155,118 +1195,144 @@ def run_research():
     _progress = []
     _scan_done = False
 
-    # ── Step 1: Fetch congress trades ────────────────────────────────────────
-    _log('🏛️  Connecting to House of Representatives disclosure system...')
-    congress_data = get_congress_trades(max_ptrs=40)
+    # ── Step 1: Broad financial news ─────────────────────────────────────────
+    _log('📰  Scanning financial news across multiple sources...')
+    broad_headlines = fetch_headlines()
+    _log(f'✅  Pulled {len(broad_headlines)} headlines from news feeds')
 
-    buy_stocks = []
+    # ── Step 2: Extract tickers explicitly mentioned in headlines ────────────
+    news_tickers = extract_tickers_from_headlines(broad_headlines)
+    if news_tickers:
+        _log(f'🔍  Found {len(news_tickers)} tickers mentioned directly in headlines: {", ".join(news_tickers[:6])}{"…" if len(news_tickers)>6 else ""}')
+
+    # ── Step 3: Trending + most-active stocks from Yahoo Finance ────────────
+    _log('📊  Fetching trending and most-active stocks from Yahoo Finance...')
+    trending = fetch_trending_tickers(max_n=20)
+    _log(f'✅  Trending stocks: {", ".join(trending[:8])}{"…" if len(trending)>8 else ""}')
+
+    # Combine: news-mentioned first (more relevant), then trending, dedup
+    seen_sym, candidates = set(), []
+    for sym in news_tickers + trending:
+        if sym not in seen_sym:
+            seen_sym.add(sym)
+            candidates.append(sym)
+    candidates = candidates[:25]
+    _log(f'🔬  Total candidate pool: {len(candidates)} stocks to analyse')
+
+    # ── Step 4: Live price data ───────────────────────────────────────────────
+    _log(f'📈  Fetching live price data for {len(candidates)} stocks...')
+    chart_cache = batch_fetch(candidates) if candidates else {}
+    _log(f'✅  Got price history for {len(chart_cache)} stocks')
+
+    # ── Step 5: Company names + market caps ──────────────────────────────────
+    _log('🏢  Looking up company names and market caps...')
+    enriched = enrich_top(candidates)
+
+    # ── Step 6: Congress trades (cross-reference, not the driver) ───────────
+    _log('🏛️  Loading Congressional trading disclosures (STOCK Act)...')
+    congress_data = get_congress_trades(max_ptrs=40)
+    congress_buyers = {}
     for sym, trades in congress_data.items():
         buyers = [t for t in trades if t['type'] == 'Buy']
         if buyers:
-            buy_stocks.append((sym, buyers))
-    buy_stocks.sort(key=lambda x: len({t['name'] for t in x[1]}), reverse=True)
+            congress_buyers[sym] = buyers
+    confirmed_syms = [s for s in candidates if s in congress_buyers]
+    _log(f'✅  Congress buying {len(congress_buyers)} stocks — {len(confirmed_syms)} overlap with our news picks: {", ".join(confirmed_syms[:5])}{"…" if len(confirmed_syms)>5 else ""}')
 
-    if not buy_stocks:
-        _log('⚠️  No recent congress trades found — retrying with broader search...')
-    else:
-        names_preview = list({t['name'] for _, trades in buy_stocks[:5] for t in trades})[:4]
-        _log(f'✅  Found {len(buy_stocks)} stocks being bought by Congress members')
-        _log(f'👥  Including: {", ".join(names_preview)}')
-
-    top_congress = buy_stocks[:15]
-    congress_symbols = [s for s, _ in top_congress]
-
-    # ── Step 2: Fetch live price data ────────────────────────────────────────
-    _log(f'📈  Fetching live price data for {len(congress_symbols)} stocks: {", ".join(congress_symbols[:8])}{"…" if len(congress_symbols)>8 else ""}')
-    chart_cache = batch_fetch(congress_symbols) if congress_symbols else {}
-    _log(f'✅  Got price history for {len(chart_cache)} stocks')
-
-    # ── Step 3: Enrich with company names + market caps ───────────────────────
-    _log('🏢  Looking up company names and market caps...')
-    enriched = enrich_top(congress_symbols)
-
-    # ── Step 4: Fetch news for each stock and score ───────────────────────────
-    _log(f'📰  Scanning news for each stock ({len(top_congress)} total)...')
+    # ── Step 7: Score every candidate ────────────────────────────────────────
+    _log(f'🔬  Scoring each stock by news sentiment + congress confirmation...')
     results = []
-    for i, (sym, buyers) in enumerate(top_congress):
-        ch = chart_cache.get(sym)
-        if not ch:
-            continue
+    valid = [s for s in candidates if s in chart_cache]
+    for i, sym in enumerate(valid):
+        ch        = chart_cache[sym]
+        e         = enriched.get(sym, {})
+        mc        = e.get('mc', 0)
+        comp_name = e.get('name', sym)
+        price     = ch.get('price', 0)
+        closes    = ch.get('closes', [])
+        w52       = ch.get('w52', 0.5)
+        rsi       = ch.get('rsi', 50)
+        chg5      = ch.get('chg5', 0)
+        vol_r     = ch.get('vol_r', 1)
 
-        e          = enriched.get(sym, {})
-        mc         = e.get('mc', 0)
-        comp_name  = e.get('name', sym)
-        price      = ch.get('price', 0)
-        closes     = ch.get('closes', [])
-        w52        = ch.get('w52', 0.5)
-        rsi        = ch.get('rsi', 50)
-        chg5       = ch.get('chg5', 0)
-        vol_r      = ch.get('vol_r', 1)
+        congress_confirmed = sym in congress_buyers
+        tag = '🏛️ Congress confirmed' if congress_confirmed else '📰 News only'
+        _log(f'🔬  [{i+1}/{len(valid)}] {comp_name} (${sym}) — {tag}...')
 
-        buyer_names = list({t['name'] for t in buyers})
-        n_buyers    = len(buyer_names)
-        _log(f'📰  [{i+1}/{len(top_congress)}] Searching news for {comp_name} (${sym}) — bought by {", ".join(buyer_names[:2])}{"+" if n_buyers>2 else ""}...')
-
-        # Fetch news specific to this stock
-        headlines = fetch_stock_news(sym, comp_name)
+        # Dedicated news fetch for this stock
+        headlines       = fetch_stock_news(sym, comp_name)
         news_score, supporting_headlines = news_sentiment(headlines)
 
-        # Score: congress signal + news sentiment + technicals
-        score = 40
-        score += min(30, n_buyers * 10)   # up to 30 pts for multiple buyers
-        score += news_score                # -30..+30 based on news
-        if w52 < 0.35: score += 10        # near 52w low = more upside
-        if rsi < 45:   score += 8         # oversold
-        if vol_r > 1.5: score += 5        # volume picking up
-        if chg5 < -5:  score += 6         # pulled back recently = entry point
+        # Scoring: news is primary (0–40 pts), congress is a strong bonus (0–30 pts)
+        score  = 25                                   # base
+        score += min(35, max(0, news_score + 20))     # news: -10 to +35
+        if congress_confirmed:
+            buyers      = congress_buyers[sym]
+            buyer_names = list({t['name'] for t in buyers})
+            n_buyers    = len(buyer_names)
+            score += min(30, n_buyers * 8)            # congress confirmation bonus
+        else:
+            buyer_names, n_buyers = [], 0
+        if w52 < 0.35: score += 8                     # near 52w low
+        if rsi < 45:   score += 6                     # oversold
+        if vol_r > 1.5: score += 5                    # unusual volume
+        if chg5 < -5:  score += 4                     # recent dip = entry
         score = max(0, min(100, score))
+
+        # Skip very low-scoring stocks (noise)
+        if score < 30:
+            continue
 
         if   score >= 74: signal = 'Strong Setup'
         elif score >= 58: signal = 'Worth Watching'
         else:             signal = 'On Radar'
 
-        # Hold type: short = momentum/news play; long = dip/conviction play
-        is_short = (rsi >= 52 or chg5 >= 0 or news_score >= 10)
+        # Hold type
+        is_short  = (rsi >= 52 or chg5 >= 0 or news_score >= 10)
         hold_type = 'short' if is_short else 'long'
 
-        # Build why text
-        names_str = ', '.join(buyer_names[:3])
-        if len(buyer_names) > 3:
-            names_str += f' +{len(buyer_names)-3} more'
-        why = f'{names_str} {"have" if n_buyers > 1 else "has"} recently bought ${sym}'
+        # Why text — lead with news, then congress as confirmation
         if supporting_headlines:
-            why += f'. News supports the trade: "{supporting_headlines[0][:100]}"'
-        elif news_score < 0:
-            why += '. Recent news is mixed — watch carefully before entering.'
+            why = f'News catalyst: "{supporting_headlines[0][:110]}"'
+        elif news_score >= 0:
+            why = f'Positive news momentum around ${sym}'
         else:
-            why += '. No major negative news found.'
+            why = f'Mixed news — watch carefully before entering'
+
+        if congress_confirmed:
+            names_str = ', '.join(buyer_names[:3])
+            if len(buyer_names) > 3:
+                names_str += f' +{len(buyer_names)-3} more'
+            why += f'. Confirmed by Congress: {names_str} {"have" if n_buyers>1 else "has"} recently bought.'
+        else:
+            why += '. Not yet in any recent Congressional disclosures.'
 
         all_trades = congress_data.get(sym, [])
-
-        print(f'    🏛️ {sym:6s} score={score:2d} buyers=[{", ".join(buyer_names[:2])}]')
+        print(f'    {"🏛️" if congress_confirmed else "📰"} {sym:6s} score={score:2d} news={news_score:+d} congress={n_buyers}')
 
         results.append({
-            'symbol':        sym,
-            'name':          comp_name,
-            'price':         price,
-            'target':        None,
-            'upsidePct':     None,
-            'score':         score,
-            'signal':        signal,
-            'holdType':      hold_type,
-            'capLabel':      cap_label(mc),
-            'why':           why,
-            'direction':     'up',
-            'closes':        closes,
+            'symbol':            sym,
+            'name':              comp_name,
+            'price':             price,
+            'target':            None,
+            'upsidePct':         None,
+            'score':             score,
+            'signal':            signal,
+            'holdType':          hold_type,
+            'congressConfirmed': congress_confirmed,
+            'capLabel':          cap_label(mc),
+            'why':               why,
+            'direction':         'up',
+            'closes':            closes,
             'stats': {
-                '52w pos':   f'{int(w52*100)}%',
-                'RSI':       str(rsi),
-                '5d':        f'{chg5:+.1f}%',
-                'cap':       fmt_mc(mc) if mc else 'N/A',
-                'vol':       f'{vol_r:.1f}x' if vol_r > 1.2 else 'normal',
+                '52w pos': f'{int(w52*100)}%',
+                'RSI':     str(rsi),
+                '5d':      f'{chg5:+.1f}%',
+                'cap':     fmt_mc(mc) if mc else 'N/A',
+                'vol':     f'{vol_r:.1f}x' if vol_r > 1.2 else 'normal',
             },
-            'congressTrades': all_trades,
-            'supportingNews': supporting_headlines,
+            'congressTrades':  all_trades,
+            'supportingNews':  supporting_headlines,
         })
 
     results.sort(key=lambda x: -x['score'])
@@ -1274,8 +1340,9 @@ def run_research():
     short_picks = [r for r in results if r['holdType'] == 'short']
     long_picks  = [r for r in results if r['holdType'] == 'long']
 
-    strong = sum(1 for r in results if r['signal'] == 'Strong Setup')
-    _log(f'🎯  Ranking complete — {len(short_picks)} short holds, {len(long_picks)} long holds ({strong} strong setups)')
+    confirmed_count = sum(1 for r in results if r['congressConfirmed'])
+    strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')
+    _log(f'🎯  {len(results)} picks ranked — {confirmed_count} confirmed by Congress, {strong} strong setups')
     _log(f'✅  Done! Showing results now...')
     _scan_done = True
 
@@ -1285,9 +1352,9 @@ def run_research():
             'themeId':    'short_hold',
             'themeIcon':  '⚡',
             'themeTitle': 'Short Hold — Days to Weeks',
-            'themeLogic': 'Stocks with momentum, strong recent news, or upward price action. '
-                          'Congress members are buying and current conditions favor a quick move. '
-                          'Best for traders looking for a near-term catalyst play.',
+            'themeLogic': 'Stocks with strong news catalysts and upward momentum. '
+                          'Where Congress is also buying, that adds extra conviction. '
+                          'Best for traders looking for a near-term move.',
             'headlines':  [],
             'stocks':     short_picks,
         })
@@ -1296,19 +1363,18 @@ def run_research():
             'themeId':    'long_hold',
             'themeIcon':  '🏦',
             'themeTitle': 'Long Hold — Weeks to Months',
-            'themeLogic': 'Stocks that are oversold, near 52-week lows, or pulling back while Congress '
-                          'is buying. These are conviction plays — let the trade develop over time '
-                          'as the fundamentals and congressional confidence play out.',
+            'themeLogic': 'Stocks in the news that are also oversold or pulling back. '
+                          'Congressional buying on these names adds conviction for a patient entry. '
+                          'Let the trade develop over time.',
             'headlines':  [],
             'stocks':     long_picks,
         })
     if not themes:
         themes.append({
-            'themeId':    'congress_buying',
-            'themeIcon':  '🏛️',
-            'themeTitle': 'Congress Is Buying — Backed by News',
-            'themeLogic': 'These are stocks recently purchased by members of Congress (STOCK Act disclosures), '
-                          'ranked by how many members are buying and whether current news supports the trade.',
+            'themeId':    'news_scan',
+            'themeIcon':  '📰',
+            'themeTitle': 'News-Driven Picks',
+            'themeLogic': 'Stocks discovered through financial news and cross-referenced with Congressional disclosures.',
             'headlines':  [],
             'stocks':     results,
         })

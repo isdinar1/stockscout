@@ -188,7 +188,7 @@
   </p>
   <button class="btn" id="btn" onclick="scan()">📡 Find Opportunities</button>
   <div class="congress-banner" style="max-width:560px;margin:20px auto 0">
-    🏛️ <strong>Cross-referenced with Congress</strong> — we check every result against recent House stock disclosures (STOCK Act) to show you when a member of Congress is buying the same stock.
+    📰 <strong>News-first, Congress-confirmed</strong> — we scan financial news and trending stocks first, then cross-reference with House STOCK Act disclosures. A 🏛️ badge means Congress is buying it too.
   </div>
 </div>
 
@@ -487,10 +487,13 @@ function render(themes) {
       const holdBadge = s.holdType === 'short'
         ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
         : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
+      const congressBadge = s.congressConfirmed
+        ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd;margin-left:6px">🏛️ Congress Confirmed</span>'
+        : '';
 
       html += `
         <div class="card" style="animation-delay:${cardIdx * .07}s">
-          ${holdBadge}
+          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${holdBadge}${congressBadge}</div>
           <div class="card-top">
             <div class="left">
               <div class="ticker">$${s.symbol}</div>
