@@ -1225,6 +1225,10 @@ def run_research():
         elif score >= 58: signal = 'Worth Watching'
         else:             signal = 'On Radar'
 
+        # Hold type: short = momentum/news play; long = dip/conviction play
+        is_short = (rsi >= 52 or chg5 >= 0 or news_score >= 10)
+        hold_type = 'short' if is_short else 'long'
+
         # Build why text
         names_str = ', '.join(buyer_names[:3])
         if len(buyer_names) > 3:
@@ -1249,6 +1253,7 @@ def run_research():
             'upsidePct':     None,
             'score':         score,
             'signal':        signal,
+            'holdType':      hold_type,
             'capLabel':      cap_label(mc),
             'why':           why,
             'direction':     'up',
@@ -1266,20 +1271,48 @@ def run_research():
 
     results.sort(key=lambda x: -x['score'])
 
+    short_picks = [r for r in results if r['holdType'] == 'short']
+    long_picks  = [r for r in results if r['holdType'] == 'long']
+
     strong = sum(1 for r in results if r['signal'] == 'Strong Setup')
-    _log(f'🎯  Ranking complete — {len(results)} picks found ({strong} strong setups)')
+    _log(f'🎯  Ranking complete — {len(short_picks)} short holds, {len(long_picks)} long holds ({strong} strong setups)')
     _log(f'✅  Done! Showing results now...')
     _scan_done = True
 
-    return [{
-        'themeId':    'congress_buying',
-        'themeIcon':  '🏛️',
-        'themeTitle': 'Congress Is Buying — Backed by News',
-        'themeLogic': 'These are stocks recently purchased by members of Congress (STOCK Act disclosures), '
-                      'ranked by how many members are buying and whether current news supports the trade.',
-        'headlines':  [],
-        'stocks':     results,
-    }]
+    themes = []
+    if short_picks:
+        themes.append({
+            'themeId':    'short_hold',
+            'themeIcon':  '⚡',
+            'themeTitle': 'Short Hold — Days to Weeks',
+            'themeLogic': 'Stocks with momentum, strong recent news, or upward price action. '
+                          'Congress members are buying and current conditions favor a quick move. '
+                          'Best for traders looking for a near-term catalyst play.',
+            'headlines':  [],
+            'stocks':     short_picks,
+        })
+    if long_picks:
+        themes.append({
+            'themeId':    'long_hold',
+            'themeIcon':  '🏦',
+            'themeTitle': 'Long Hold — Weeks to Months',
+            'themeLogic': 'Stocks that are oversold, near 52-week lows, or pulling back while Congress '
+                          'is buying. These are conviction plays — let the trade develop over time '
+                          'as the fundamentals and congressional confidence play out.',
+            'headlines':  [],
+            'stocks':     long_picks,
+        })
+    if not themes:
+        themes.append({
+            'themeId':    'congress_buying',
+            'themeIcon':  '🏛️',
+            'themeTitle': 'Congress Is Buying — Backed by News',
+            'themeLogic': 'These are stocks recently purchased by members of Congress (STOCK Act disclosures), '
+                          'ranked by how many members are buying and whether current news supports the trade.',
+            'headlines':  [],
+            'stocks':     results,
+        })
+    return themes
 
 # ── HTTP server ───────────────────────────────────────────────────────────────
 
