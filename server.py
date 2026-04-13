@@ -1379,11 +1379,18 @@ def run_research():
     short_picks = [r for r in results if r['holdType'] == 'short']
     long_picks  = [r for r in results if r['holdType'] == 'long']
 
-    # Balance to equal counts — take top N from each where N = min of both
-    n = min(len(short_picks), len(long_picks), 8)
-    if n > 0:
-        short_picks = short_picks[:n]
-        long_picks  = long_picks[:n]
+    # Force exactly 8 each — reclassify overflow from the larger group if needed
+    TARGET = 8
+    while len(short_picks) < TARGET and len(long_picks) > TARGET:
+        r = long_picks.pop(TARGET)
+        r['holdType'] = 'short'
+        short_picks.append(r)
+    while len(long_picks) < TARGET and len(short_picks) > TARGET:
+        r = short_picks.pop(TARGET)
+        r['holdType'] = 'long'
+        long_picks.append(r)
+    short_picks = short_picks[:TARGET]
+    long_picks  = long_picks[:TARGET]
 
     confirmed_count = sum(1 for r in results if r['congressConfirmed'])
     strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')

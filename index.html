@@ -462,6 +462,69 @@ function supportingNewsHtml(headlines) {
   return `<div class="news-list">${items}</div>`;
 }
 
+// ── Modal (global scope so onclick attributes can reach them) ─────────────────
+const stockRegistry = {};
+
+function openModal(idx) {
+  const s = stockRegistry[idx];
+  if (!s) return;
+  const sc  = sigClass[s.signal] || 's-watch';
+  const fc  = fillClass(s.score);
+  const dir = s.direction === 'up'
+    ? '<span class="dir-tag dir-up">↑ Long</span>'
+    : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
+  const holdBadge = s.holdType === 'short'
+    ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
+    : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
+  const congressBadge = s.congressConfirmed
+    ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd">🏛️ Congress Confirmed</span>'
+    : '';
+  const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
+    `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
+
+  document.getElementById('modal-content').innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${holdBadge}${congressBadge}</div>
+    <div class="card-top">
+      <div class="left">
+        <div class="ticker" style="font-size:1.3rem">$${s.symbol}</div>
+        <div>
+          <div class="price-line"><span class="price" style="font-size:1.1rem">$${s.price}</span></div>
+          <span class="cap-tag">${s.capLabel}</span>
+          ${dir}
+        </div>
+      </div>
+      <span class="signal ${sc}">${s.signal}</span>
+    </div>
+    ${sparkline(s.closes, 'modal')}
+    <div class="bar-row" style="margin-top:4px">
+      <span class="bar-lbl">Confidence</span>
+      <div class="bar-track"><div class="bar-fill ${fc}" id="bmodal" style="width:0"></div></div>
+      <span class="bar-num">${s.score}</span>
+    </div>
+    <div class="why" style="margin-top:14px">
+      <div class="why-hd">Why this pick</div>
+      <div class="why-body">${s.why}</div>
+    </div>
+    ${supportingNewsHtml(s.supportingNews)}
+    ${congressHtml(s.congressTrades)}
+    <div class="stats" style="margin-top:10px">${statHtml}</div>`;
+
+  document.getElementById('modal-overlay').classList.add('open');
+  requestAnimationFrame(() => {
+    const b = document.getElementById('bmodal');
+    if (b) setTimeout(() => b.style.width = s.score + '%', 80);
+  });
+}
+
+function closeModal(e) {
+  if (e && e.target !== document.getElementById('modal-overlay')) return;
+  document.getElementById('modal-overlay').classList.remove('open');
+}
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') document.getElementById('modal-overlay').classList.remove('open');
+});
+
 function render(themes) {
   if (!themes || !themes.length) {
     document.getElementById('wrap').innerHTML =
@@ -474,72 +537,9 @@ function render(themes) {
   const allStocks = [];
 
   // Separate hold sections from other themes
-  const shortTheme = themes.find(t => t.themeId === 'short_hold');
-  const longTheme  = themes.find(t => t.themeId === 'long_hold');
+  const shortTheme  = themes.find(t => t.themeId === 'short_hold');
+  const longTheme   = themes.find(t => t.themeId === 'long_hold');
   const otherThemes = themes.filter(t => t.themeId !== 'short_hold' && t.themeId !== 'long_hold');
-
-  // Store all stock data for modal lookup
-  const stockRegistry = {};
-
-  function openModal(idx) {
-    const s = stockRegistry[idx];
-    if (!s) return;
-    const sc  = sigClass[s.signal] || 's-watch';
-    const fc  = fillClass(s.score);
-    const dir = s.direction === 'up'
-      ? '<span class="dir-tag dir-up">↑ Long</span>'
-      : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
-    const holdBadge = s.holdType === 'short'
-      ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
-      : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
-    const congressBadge = s.congressConfirmed
-      ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd">🏛️ Congress Confirmed</span>'
-      : '';
-    const priceStr = `<span class="price" style="font-size:1.1rem">$${s.price}</span>`;
-    const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
-      `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
-
-    document.getElementById('modal-content').innerHTML = `
-      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${holdBadge}${congressBadge}</div>
-      <div class="card-top">
-        <div class="left">
-          <div class="ticker" style="font-size:1.3rem">$${s.symbol}</div>
-          <div>
-            <div class="price-line">${priceStr}</div>
-            <span class="cap-tag">${s.capLabel}</span>
-            ${dir}
-          </div>
-        </div>
-        <span class="signal ${sc}">${s.signal}</span>
-      </div>
-      ${sparkline(s.closes, 'modal')}
-      <div class="bar-row" style="margin-top:4px">
-        <span class="bar-lbl">Confidence</span>
-        <div class="bar-track"><div class="bar-fill ${fc}" id="bmodal" style="width:0"></div></div>
-        <span class="bar-num">${s.score}</span>
-      </div>
-      <div class="why" style="margin-top:14px">
-        <div class="why-hd">Why this pick</div>
-        <div class="why-body">${s.why}</div>
-      </div>
-      ${supportingNewsHtml(s.supportingNews)}
-      ${congressHtml(s.congressTrades)}
-      <div class="stats" style="margin-top:10px">${statHtml}</div>`;
-
-    document.getElementById('modal-overlay').classList.add('open');
-    requestAnimationFrame(() => {
-      const b = document.getElementById('bmodal');
-      if (b) setTimeout(() => b.style.width = s.score + '%', 80);
-    });
-  }
-
-  function closeModal(e) {
-    if (e && e.target !== document.getElementById('modal-overlay') && e.target !== document.querySelector('.modal-close')) return;
-    document.getElementById('modal-overlay').classList.remove('open');
-  }
-
-  // Close on Escape key
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('modal-overlay').classList.remove('open'); });
 
   function renderThemeBlock(theme) {
     const headlineHtml = (theme.headlines || []).map(h =>
