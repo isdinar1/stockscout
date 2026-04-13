@@ -11,6 +11,7 @@ import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets, hmac, ba
 import http.cookies, smtplib, random
 from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import socketserver
 import warnings
 warnings.filterwarnings('ignore')
@@ -704,7 +705,7 @@ def _parse_ptr_pdf(pdf_bytes, member_name):
         pass
     return trades
 
-def get_congress_trades(max_ptrs=40):
+def get_congress_trades(max_ptrs=15):
     """
     Download recent House PTR filings and extract stock trades.
     Returns {ticker: [list of trades]} for all tickers found.
@@ -737,11 +738,10 @@ def get_congress_trades(max_ptrs=40):
 
     leg_map = get_legislators_map()
 
-    ticker_trades = {}
-    for idx, (last, first, doc_id, filed) in enumerate(ptrs):
+    def fetch_ptr(args):
+        idx, (last, first, doc_id, filed) = args
         member = f'{first} {last}'
         photo  = member_photo_url(member, leg_map)
-        _log(f'📄  [{idx+1}/{len(ptrs)}] Reading {member}\'s disclosure ({filed})...')
         try:
             req2 = urllib.request.Request(
                 f'https://disclosures-clerk.house.gov/public_disc/ptr-pdfs/2026/{doc_id}.pdf',
@@ -749,15 +749,22 @@ def get_congress_trades(max_ptrs=40):
             )
             with urllib.request.urlopen(req2, timeout=15) as r2:
                 pdf_bytes = r2.read()
-            for trade in _parse_ptr_pdf(pdf_bytes, member):
-                trade['photo'] = photo
+            trades = _parse_ptr_pdf(pdf_bytes, member)
+            for t in trades:
+                t['photo'] = photo
+            _log(f'📄  [{idx+1}/{len(ptrs)}] {member} — {len(trades)} trade(s) found')
+            return trades
+        except Exception:
+            return []
+
+    ticker_trades = {}
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for trades in ex.map(fetch_ptr, enumerate(ptrs)):
+            for trade in trades:
                 tk = trade['ticker']
                 if tk not in ticker_trades:
                     ticker_trades[tk] = []
                 ticker_trades[tk].append(trade)
-            time.sleep(0.3)
-        except Exception as e:
-            pass
 
     buys  = sum(1 for trades in ticker_trades.values() for t in trades if t['type']=='Buy')
     sells = sum(1 for trades in ticker_trades.values() for t in trades if t['type']=='Sell')
@@ -808,7 +815,7 @@ def get_news():
         for m in re.finditer(r'<title>(?:<!\[CDATA\[)?([^\]<]{15,})(?:\]\]>)?</title>', text):
             add(m.group(1))
 
-    # 1. Google News RSS — free, reliable, no rate limits, covers all major themes
+    # Fetch all RSS feeds in parallel
     google_queries = [
         'oil prices ceasefire OPEC tariffs stock market',
         'federal reserve interest rates inflation',
@@ -817,25 +824,11 @@ def get_news():
         'nuclear uranium energy AI data center',
         'shipping freight rates Red Sea',
     ]
-    for q in google_queries:
-        enc = urllib.parse.quote(q)
-        text = fetch_text(
-            f'https://news.google.com/rss/search?q={enc}&hl=en-US&gl=US&ceid=US:en'
-        )
-        parse_rss(text)
-
-    # 2. Yahoo Finance search (a few targeted calls with delay to avoid 429)
-    if len(headlines) < 10:
-        yf_terms = ['oil ceasefire iran', 'tariff trump', 'gold price', 'fed rate']
-        for term in yf_terms:
-            time.sleep(0.8)
-            q = urllib.parse.quote(term)
-            data = fetch_json(
-                f'https://query1.finance.yahoo.com/v1/finance/search?q={q}&newsCount=8&quotesCount=0'
-            )
-            if data:
-                for n in data.get('news', []):
-                    add(n.get('title', ''))
+    urls = [f'https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=en-US&gl=US&ceid=US:en'
+            for q in google_queries]
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for text in ex.map(fetch_text, urls):
+            parse_rss(text)
 
     print(f'  [news] {len(headlines)} headlines fetched')
     return headlines
@@ -900,6 +893,16 @@ def batch_fetch(symbols):
                 l = sum(max(-x, 0) for x in d[-14:]) / 14
                 rsi_val = 100 - 100 / (1 + g / l) if l > 0 else 100.0
 
+                # Pull name + market cap from fast_info (no extra network call)
+                fi   = tickers.tickers[sym].fast_info if hasattr(tickers, 'tickers') else None
+                name = sym
+                mc   = 0
+                try:
+                    if fi:
+                        mc   = getattr(fi, 'market_cap', 0) or 0
+                except Exception:
+                    pass
+
                 results[sym] = {
                     'price':  round(curr, 2),
                     'hi52':   round(hi52, 2),
@@ -908,7 +911,8 @@ def batch_fetch(symbols):
                     'chg5':   round(chg5, 1),
                     'vol_r':  round(vol_r, 1),
                     'rsi':    round(rsi_val, 1),
-                    'name':   sym,
+                    'name':   name,
+                    'mc':     mc,
                     'closes': [round(c, 2) for c in closes[-90:]],  # 90-day chart
                 }
             except Exception as e:
@@ -917,23 +921,28 @@ def batch_fetch(symbols):
         print(f'  [batch_fetch] {e}')
     return results
 
-def enrich_top(symbols):
-    """Fetch name + market cap for top picks using yfinance."""
+def enrich_top(symbols, chart_cache=None):
+    """Return name + market cap. Uses data already in chart_cache when available."""
     out = {}
-    try:
+    if chart_cache:
         for sym in symbols:
-            try:
-                t    = yf.Ticker(sym)
-                info = t.info
-                out[sym] = {
-                    'name': info.get('longName') or info.get('shortName', sym),
-                    'mc':   info.get('marketCap', 0),
-                }
-            except:
-                out[sym] = {'name': sym, 'mc': 0}
-            time.sleep(0.1)
-    except Exception as e:
-        print(f'  [enrich] {e}')
+            ch = chart_cache.get(sym, {})
+            out[sym] = {'name': ch.get('name', sym), 'mc': ch.get('mc', 0)}
+        # Fill in any missing ones with a fast yfinance lookup
+        missing = [s for s in symbols if not out.get(s, {}).get('name') or out[s]['name'] == s]
+    else:
+        missing = symbols
+
+    if missing:
+        try:
+            for sym in missing:
+                try:
+                    info = yf.Ticker(sym).fast_info
+                    out[sym] = {'name': sym, 'mc': getattr(info, 'market_cap', 0) or 0}
+                except Exception:
+                    out[sym] = {'name': sym, 'mc': 0}
+        except Exception as e:
+            print(f'  [enrich] {e}')
     return out
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1244,14 +1253,26 @@ def run_research():
     chart_cache = batch_fetch(candidates) if candidates else {}
     _log(f'✅  Got price history for {len(chart_cache)} stocks')
 
-    # ── Step 6: Company names + market caps ──────────────────────────────────
-    _log('🏢  Looking up company names and market caps...')
-    enriched = enrich_top(candidates)
+    # ── Step 6: Company names + market caps (reuse chart_cache data) ─────────
+    enriched = enrich_top(candidates, chart_cache)
 
-    # ── Step 7: Score every candidate ────────────────────────────────────────
-    _log(f'🔬  Scoring {len(chart_cache)} stocks...')
-    results = []
+    # ── Step 7: Fetch per-stock news in parallel ─────────────────────────────
     valid = [s for s in candidates if s in chart_cache]
+    _log(f'🔬  Fetching news for {len(valid)} stocks in parallel...')
+
+    def fetch_stock_news_for(sym):
+        comp_name = enriched.get(sym, {}).get('name', sym)
+        headlines = fetch_stock_news(sym, comp_name)
+        return sym, headlines
+
+    news_cache = {}
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        for sym, headlines in ex.map(fetch_stock_news_for, valid):
+            news_cache[sym] = headlines
+
+    # ── Step 8: Score every candidate ────────────────────────────────────────
+    _log(f'🔬  Scoring {len(valid)} stocks...')
+    results = []
     for i, sym in enumerate(valid):
         ch        = chart_cache[sym]
         e         = enriched.get(sym, {})
@@ -1268,12 +1289,12 @@ def run_research():
         theme_info         = sym_theme.get(sym)
         direction          = theme_info[1] if theme_info else 'up'
 
-        tag = ('🏛️ Congress + news' if congress_confirmed else '📰 News theme')
-        _log(f'🔬  [{i+1}/{len(valid)}] {comp_name} (${sym}) — {tag}')
-
-        # Per-stock news for sentiment
-        stock_headlines = fetch_stock_news(sym, comp_name)
+        # Per-stock news sentiment (already fetched)
+        stock_headlines = news_cache.get(sym, [])
         news_score, supporting_headlines = news_sentiment(stock_headlines)
+
+        tag = ('🏛️ Congress + news' if congress_confirmed else '📰 News theme')
+        _log(f'🔬  [{i+1}/{len(valid)}] {comp_name} (${sym}) — score pending ({tag})')
 
         # Base score from world-news theme signal
         score = 35
