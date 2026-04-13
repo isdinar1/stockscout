@@ -1204,12 +1204,16 @@ def run_research():
     _progress = []
     _scan_done = False
 
-    # ── Step 1: Real-world news ───────────────────────────────────────────────
-    _log('🌍  Scanning world news for market-moving events...')
-    headlines = get_news()
-    _log(f'✅  Pulled {len(headlines)} headlines')
+    # ── Steps 1+2: Fetch news AND congress trades in parallel ────────────────
+    _log('🌍  Scanning news and Congressional disclosures simultaneously...')
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        news_fut     = ex.submit(get_news)
+        congress_fut = ex.submit(get_congress_trades, 10)
+        headlines    = news_fut.result()
+        congress_data = congress_fut.result()
+    _log(f'✅  News: {len(headlines)} headlines  |  Congress: {len(congress_data)} stocks tracked')
 
-    # ── Step 2: Detect which themes are firing ────────────────────────────────
+    # ── Step 3: Detect themes ─────────────────────────────────────────────────
     _log('🔍  Detecting active themes (tariffs, oil, ceasefire, Fed, AI...)...')
     active_themes = detect_themes(headlines)
     if not active_themes:
@@ -1218,7 +1222,7 @@ def run_research():
         for t, _ in active_themes:
             _log(f'📡  Theme detected: {t["icon"]} {t["title"]}')
 
-    # ── Step 3: Build candidate stock list from affected sectors ─────────────
+    # ── Step 4: Build candidate stock list from affected sectors ─────────────
     seen_sym, candidates, sym_theme = set(), [], {}
     for theme, rel_headlines in active_themes:
         for direction in ('up', 'down'):
@@ -1228,11 +1232,10 @@ def run_research():
                         seen_sym.add(sym)
                         candidates.append(sym)
                         sym_theme[sym] = (theme, direction, rel_headlines)
-    _log(f'📋  {len(candidates)} stocks identified across affected sectors: {", ".join(candidates[:10])}{"…" if len(candidates)>10 else ""}')
+    candidates = candidates[:20]  # cap to keep scoring fast
+    _log(f'📋  {len(candidates)} stocks identified: {", ".join(candidates[:10])}{"…" if len(candidates)>10 else ""}')
 
-    # ── Step 4: Congress trades (cross-reference) ─────────────────────────────
-    _log('🏛️  Loading Congressional trading disclosures (STOCK Act)...')
-    congress_data = get_congress_trades(max_ptrs=40)
+    # ── Congress buyers map ───────────────────────────────────────────────────
     congress_buyers = {}
     for sym, trades in congress_data.items():
         buyers = [t for t in trades if t['type'] == 'Buy']

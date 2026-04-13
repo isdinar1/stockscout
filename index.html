@@ -380,7 +380,7 @@ async function scan() {
   progressTimer = setInterval(pollProgress, 600);
 
   try {
-    const res = await fetch(`${API}/scan`, { signal: AbortSignal.timeout(180000) });
+    const res = await fetch(`${API}/scan`, { signal: AbortSignal.timeout(300000) });
     clearInterval(progressTimer);
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
