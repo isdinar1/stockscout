@@ -169,14 +169,36 @@
     .theme-block.long-hold  .theme-hd { border-bottom-color:rgba(99,102,241,.25); }
     .theme-block.long-hold  .theme-title { background:linear-gradient(90deg,#818cf8,#6366f1); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
 
-    .hold-badge { display:inline-flex; align-items:center; gap:5px; border-radius:6px; font-size:.67rem; font-weight:800; letter-spacing:.06em; padding:3px 9px; text-transform:uppercase; margin-bottom:10px; }
+    .hold-badge { display:inline-flex; align-items:center; gap:5px; border-radius:6px; font-size:.67rem; font-weight:800; letter-spacing:.06em; padding:3px 9px; text-transform:uppercase; }
     .hold-short { background:rgba(245,158,11,.12); border:1px solid rgba(245,158,11,.35); color:#fbbf24; }
+
+    /* Clickable card — compact summary only */
+    .card { cursor:pointer; }
+    .card:hover { border-color:rgba(220,38,38,.5); transform:translateY(-1px); box-shadow:0 4px 20px rgba(220,38,38,.15); }
+    .card-tap-hint { color:var(--muted); font-size:.68rem; margin-top:10px; text-align:right; }
+
+    /* Detail modal */
+    .modal-overlay { position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:100; display:flex; align-items:flex-end; justify-content:center; opacity:0; pointer-events:none; transition:opacity .25s; }
+    .modal-overlay.open { opacity:1; pointer-events:all; }
+    .modal { background:#0f0015; border:1px solid rgba(220,38,38,.3); border-radius:20px 20px 0 0; width:100%; max-width:640px; max-height:88vh; overflow-y:auto; padding:28px 24px 40px; transform:translateY(100%); transition:transform .3s cubic-bezier(.4,0,.2,1); }
+    .modal-overlay.open .modal { transform:translateY(0); }
+    .modal-close { float:right; background:rgba(255,255,255,.07); border:none; border-radius:8px; color:#94a3b8; cursor:pointer; font-size:.85rem; padding:5px 12px; margin-bottom:16px; }
+    .modal-close:hover { background:rgba(220,38,38,.2); color:#fff; }
     .hold-long  { background:rgba(99,102,241,.12);  border:1px solid rgba(99,102,241,.35);  color:#a5b4fc; }
   </style>
 </head>
 <body>
 
 <canvas id="radar-canvas"></canvas>
+
+<!-- Detail modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="closeModal(event)">
+  <div class="modal" id="modal-body">
+    <button class="modal-close" onclick="closeModal()">✕ Close</button>
+    <div id="modal-content"></div>
+  </div>
+</div>
+
 <header>
   <span style="font-size:1.4rem">📡</span>
   <h1>StockScout</h1>
@@ -456,6 +478,69 @@ function render(themes) {
   const longTheme  = themes.find(t => t.themeId === 'long_hold');
   const otherThemes = themes.filter(t => t.themeId !== 'short_hold' && t.themeId !== 'long_hold');
 
+  // Store all stock data for modal lookup
+  const stockRegistry = {};
+
+  function openModal(idx) {
+    const s = stockRegistry[idx];
+    if (!s) return;
+    const sc  = sigClass[s.signal] || 's-watch';
+    const fc  = fillClass(s.score);
+    const dir = s.direction === 'up'
+      ? '<span class="dir-tag dir-up">↑ Long</span>'
+      : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
+    const holdBadge = s.holdType === 'short'
+      ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
+      : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
+    const congressBadge = s.congressConfirmed
+      ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd">🏛️ Congress Confirmed</span>'
+      : '';
+    const priceStr = `<span class="price" style="font-size:1.1rem">$${s.price}</span>`;
+    const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
+      `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
+
+    document.getElementById('modal-content').innerHTML = `
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:14px">${holdBadge}${congressBadge}</div>
+      <div class="card-top">
+        <div class="left">
+          <div class="ticker" style="font-size:1.3rem">$${s.symbol}</div>
+          <div>
+            <div class="price-line">${priceStr}</div>
+            <span class="cap-tag">${s.capLabel}</span>
+            ${dir}
+          </div>
+        </div>
+        <span class="signal ${sc}">${s.signal}</span>
+      </div>
+      ${sparkline(s.closes, 'modal')}
+      <div class="bar-row" style="margin-top:4px">
+        <span class="bar-lbl">Confidence</span>
+        <div class="bar-track"><div class="bar-fill ${fc}" id="bmodal" style="width:0"></div></div>
+        <span class="bar-num">${s.score}</span>
+      </div>
+      <div class="why" style="margin-top:14px">
+        <div class="why-hd">Why this pick</div>
+        <div class="why-body">${s.why}</div>
+      </div>
+      ${supportingNewsHtml(s.supportingNews)}
+      ${congressHtml(s.congressTrades)}
+      <div class="stats" style="margin-top:10px">${statHtml}</div>`;
+
+    document.getElementById('modal-overlay').classList.add('open');
+    requestAnimationFrame(() => {
+      const b = document.getElementById('bmodal');
+      if (b) setTimeout(() => b.style.width = s.score + '%', 80);
+    });
+  }
+
+  function closeModal(e) {
+    if (e && e.target !== document.getElementById('modal-overlay') && e.target !== document.querySelector('.modal-close')) return;
+    document.getElementById('modal-overlay').classList.remove('open');
+  }
+
+  // Close on Escape key
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') document.getElementById('modal-overlay').classList.remove('open'); });
+
   function renderThemeBlock(theme) {
     const headlineHtml = (theme.headlines || []).map(h =>
       `<div class="headline-chip">${h.slice(0, 130)}${h.length > 130 ? '…' : ''}</div>`
@@ -478,48 +563,42 @@ function render(themes) {
 
     (theme.stocks || []).forEach(s => {
       allStocks.push(s);
+      stockRegistry[cardIdx] = s;
       const sc  = sigClass[s.signal] || 's-watch';
       const fc  = fillClass(s.score);
+      const holdBadge = s.holdType === 'short'
+        ? '<span class="hold-badge hold-short">⚡ Short</span>'
+        : '<span class="hold-badge hold-long">🏦 Long</span>';
+      const congressBadge = s.congressConfirmed
+        ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd">🏛️</span>'
+        : '';
       const dir = s.direction === 'up'
         ? '<span class="dir-tag dir-up">↑ Long</span>'
-        : '<span class="dir-tag dir-down">↓ Short/Avoid</span>';
-      const priceStr = `<span class="price">$${s.price}</span>` +
-        (s.target ? `<span class="target">→ $${s.target}${s.upsidePct ? ` (+${s.upsidePct}%)` : ''}</span>` : '');
-      const statHtml = Object.entries(s.stats || {}).map(([k, v]) =>
-        `<div class="st"><span class="sv">${v}</span><span class="sl">${k}</span></div>`).join('');
-      const holdBadge = s.holdType === 'short'
-        ? '<span class="hold-badge hold-short">⚡ Short Hold · Days–Weeks</span>'
-        : '<span class="hold-badge hold-long">🏦 Long Hold · Weeks–Months</span>';
-      const congressBadge = s.congressConfirmed
-        ? '<span class="hold-badge" style="background:rgba(168,85,247,.12);border:1px solid rgba(168,85,247,.35);color:#c4b5fd;margin-left:6px">🏛️ Congress Confirmed</span>'
-        : '';
+        : '<span class="dir-tag dir-down">↓ Short</span>';
+
+      // Compact card — click to expand
       block += `
-        <div class="card" style="animation-delay:${cardIdx * .07}s">
-          <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">${holdBadge}${congressBadge}</div>
+        <div class="card" style="animation-delay:${cardIdx * .07}s" onclick="openModal(${cardIdx})">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+            <div style="display:flex;gap:5px">${holdBadge}${congressBadge}</div>
+            <span style="color:var(--muted);font-size:.68rem">Tap for details →</span>
+          </div>
           <div class="card-top">
             <div class="left">
               <div class="ticker">$${s.symbol}</div>
               <div>
-                <div class="price-line">${priceStr}</div>
+                <div class="price-line"><span class="price">$${s.price}</span></div>
                 <span class="cap-tag">${s.capLabel}</span>
                 ${dir}
               </div>
             </div>
             <span class="signal ${sc}">${s.signal}</span>
           </div>
-          ${sparkline(s.closes, cardIdx)}
-          ${congressHtml(s.congressTrades)}
-          <div class="bar-row">
+          <div class="bar-row" style="margin-bottom:0">
             <span class="bar-lbl">Confidence</span>
             <div class="bar-track"><div class="bar-fill ${fc}" id="b${cardIdx}"></div></div>
             <span class="bar-num">${s.score}</span>
           </div>
-          <div class="why">
-            <div class="why-hd">Why this is a buy</div>
-            <div class="why-body">${s.why}</div>
-          </div>
-          ${supportingNewsHtml(s.supportingNews)}
-          <div class="stats">${statHtml}</div>
         </div>`;
       cardIdx++;
     });

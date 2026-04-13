@@ -1376,6 +1376,12 @@ def run_research():
     short_picks = [r for r in results if r['holdType'] == 'short']
     long_picks  = [r for r in results if r['holdType'] == 'long']
 
+    # Balance to equal counts — take top N from each where N = min of both
+    n = min(len(short_picks), len(long_picks), 8)
+    if n > 0:
+        short_picks = short_picks[:n]
+        long_picks  = long_picks[:n]
+
     confirmed_count = sum(1 for r in results if r['congressConfirmed'])
     strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')
     _log(f'🎯  {len(results)} picks — {confirmed_count} Congress-confirmed, {strong} strong setups')
