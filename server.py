@@ -223,37 +223,61 @@ def send_alert_email(to_email, name, short_picks, long_picks):
     smtp_port = int(os.environ.get('SMTP_PORT', '587'))
     smtp_user = os.environ.get('SMTP_EMAIL', '')
     smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+    site_url  = os.environ.get('SITE_URL', 'https://stockscout.up.railway.app')
     if not smtp_user or not smtp_pass:
         return False
 
-    def fmt_picks(picks, label):
+    def pick_rows(picks, label, color):
         if not picks:
             return ''
-        lines = [f'\n{label}']
+        rows = ''
         for p in picks[:4]:
-            congress = ' 🏛️ Congress confirmed' if p.get('congressConfirmed') else ''
-            lines.append(f'  • ${p["symbol"]} ({p["name"]}) — {p["signal"]} — Score {p["score"]}{congress}')
-        return '\n'.join(lines)
+            congress = '&nbsp;🏛️ <b>Congress confirmed</b>' if p.get('congressConfirmed') else ''
+            rows += (
+                f'<tr style="border-bottom:1px solid #e5e7eb">'
+                f'<td style="padding:10px 8px;font-weight:800;color:{color}">${p["symbol"]}</td>'
+                f'<td style="padding:10px 8px;color:#374151">{p["name"]}</td>'
+                f'<td style="padding:10px 8px;color:#374151">{p["signal"]}</td>'
+                f'<td style="padding:10px 8px;font-weight:700">{p["score"]}/100{congress}</td>'
+                f'</tr>'
+            )
+        return (
+            f'<h3 style="margin:24px 0 8px;color:#111827">{label}</h3>'
+            f'<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">'
+            f'<tr style="background:#f3f4f6;font-size:.75rem;color:#6b7280;text-transform:uppercase">'
+            f'<th style="padding:8px">Ticker</th><th style="padding:8px">Company</th>'
+            f'<th style="padding:8px">Signal</th><th style="padding:8px">Score</th></tr>'
+            f'{rows}</table>'
+        )
 
-    short_section = fmt_picks(short_picks, '⚡ Short Hold (Days–Weeks):')
-    long_section  = fmt_picks(long_picks,  '🏦 Long Hold (Weeks–Months):')
+    html_body = f'''
+<div style="font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:24px">
+  <h1 style="color:#dc2626;margin-bottom:4px">📡 StockScout</h1>
+  <p style="color:#6b7280;margin-top:0">Daily Market Alert</p>
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+  <p style="color:#111827">Hi <b>{name}</b>,</p>
+  <p style="color:#374151">Here are today's top stock picks based on world news and Congressional trading disclosures:</p>
+  {pick_rows(short_picks, '⚡ Short Hold — Days to Weeks', '#d97706')}
+  {pick_rows(long_picks,  '🏦 Long Hold — Weeks to Months', '#4f46e5')}
+  <div style="text-align:center;margin:32px 0">
+    <a href="{site_url}" style="background:#dc2626;color:#fff;padding:14px 32px;border-radius:10px;text-decoration:none;font-weight:700;font-size:1rem">
+      View Full Analysis →
+    </a>
+  </div>
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+  <p style="color:#9ca3af;font-size:.75rem;text-align:center">
+    ⚠️ Not financial advice. Always do your own research.<br>
+    <a href="{site_url}/unsubscribe?email={urllib.parse.quote(to_email)}" style="color:#9ca3af">Unsubscribe</a>
+  </p>
+</div>'''
 
-    body = (
-        f'Hi {name},\n\n'
-        f'StockScout just completed a new scan. Here are today\'s top picks:\n'
-        f'{short_section}'
-        f'{long_section}\n\n'
-        f'Log in to see the full analysis, charts, and why each stock was picked:\n'
-        f'https://stockscout.up.railway.app\n\n'
-        f'— StockScout\n\n'
-        f'To unsubscribe, reply with "unsubscribe" or visit:\n'
-        f'https://stockscout.up.railway.app/unsubscribe?email={urllib.parse.quote(to_email)}'
-    )
     try:
-        msg = MIMEText(body)
+        from email.mime.multipart import MIMEMultipart
+        msg = MIMEMultipart('alternative')
         msg['Subject'] = f'📡 StockScout: {len(short_picks)+len(long_picks)} new picks today'
         msg['From']    = smtp_user
         msg['To']      = to_email
+        msg.attach(MIMEText(html_body, 'html'))
         with smtplib.SMTP(smtp_host, smtp_port) as s:
             s.starttls()
             s.login(smtp_user, smtp_pass)
@@ -1724,9 +1748,46 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
 
+def _scheduler():
+    """Background thread: run a scan every morning at 8:00 AM ET and email subscribers."""
+    import datetime
+    SCAN_HOUR_ET = 8  # 8 AM Eastern
+    ET_OFFSET    = -5 # UTC-5 (EST); adjust to -4 in summer if needed
+
+    print('⏰  Daily alert scheduler started (fires at 8 AM ET)')
+    last_sent_date = None
+
+    while True:
+        try:
+            now_utc  = datetime.datetime.utcnow()
+            now_et   = now_utc + datetime.timedelta(hours=ET_OFFSET)
+            today    = now_et.date()
+
+            if now_et.hour == SCAN_HOUR_ET and last_sent_date != today:
+                print(f'⏰  Running scheduled morning scan ({today})...')
+                last_sent_date = today
+                try:
+                    themes = run_research()
+                    short  = next((t['stocks'] for t in themes if t['themeId'] == 'short_hold'), [])
+                    long_  = next((t['stocks'] for t in themes if t['themeId'] == 'long_hold'),  [])
+                    send_alerts_to_all(short, long_)
+                    print(f'⏰  Morning scan complete — alerts sent')
+                except Exception as e:
+                    print(f'⏰  Scheduled scan failed: {e}')
+
+            time.sleep(60)  # check every minute
+        except Exception as e:
+            print(f'⏰  Scheduler error: {e}')
+            time.sleep(60)
+
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     init_db()
+
+    # Start daily scheduler in background
+    threading.Thread(target=_scheduler, daemon=True).start()
+
     print(f'\n🚀 StockScout → http://localhost:{port}')
     print('   Open that URL, click "Find Opportunities"\n')
     class ThreadingHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
