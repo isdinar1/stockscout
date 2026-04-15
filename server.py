@@ -1749,36 +1749,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
 
 def _scheduler():
-    """Background thread: run a scan every morning at 8:00 AM ET and email subscribers."""
-    import datetime
-    SCAN_HOUR_ET = 8  # 8 AM Eastern
-    ET_OFFSET    = -5 # UTC-5 (EST); adjust to -4 in summer if needed
-
-    print('⏰  Daily alert scheduler started (fires at 8 AM ET)')
-    last_sent_date = None
-
+    """Background thread: run a scan every 30 minutes and email subscribers."""
+    INTERVAL = 30 * 60  # 30 minutes in seconds
+    print('⏰  Alert scheduler started — scanning every 30 minutes')
     while True:
         try:
-            now_utc  = datetime.datetime.utcnow()
-            now_et   = now_utc + datetime.timedelta(hours=ET_OFFSET)
-            today    = now_et.date()
-
-            if now_et.hour == SCAN_HOUR_ET and last_sent_date != today:
-                print(f'⏰  Running scheduled morning scan ({today})...')
-                last_sent_date = today
-                try:
-                    themes = run_research()
-                    short  = next((t['stocks'] for t in themes if t['themeId'] == 'short_hold'), [])
-                    long_  = next((t['stocks'] for t in themes if t['themeId'] == 'long_hold'),  [])
-                    send_alerts_to_all(short, long_)
-                    print(f'⏰  Morning scan complete — alerts sent')
-                except Exception as e:
-                    print(f'⏰  Scheduled scan failed: {e}')
-
-            time.sleep(60)  # check every minute
+            time.sleep(INTERVAL)
+            print('⏰  Running scheduled scan...')
+            themes = run_research()
+            short  = next((t['stocks'] for t in themes if t['themeId'] == 'short_hold'), [])
+            long_  = next((t['stocks'] for t in themes if t['themeId'] == 'long_hold'),  [])
+            send_alerts_to_all(short, long_)
+            print('⏰  Scheduled scan complete — alerts sent')
         except Exception as e:
             print(f'⏰  Scheduler error: {e}')
-            time.sleep(60)
 
 
 if __name__ == '__main__':
