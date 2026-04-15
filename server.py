@@ -1614,6 +1614,33 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, 'text/html; charset=utf-8', html)
 
+        elif path == '/debug-smtp':
+            # Shows the exact SMTP error so we can fix it
+            smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+            smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+            smtp_user = os.environ.get('SMTP_EMAIL', '')
+            smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+            result = 'Not tested'
+            try:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
+                    s.ehlo()
+                    s.starttls()
+                    s.ehlo()
+                    s.login(smtp_user, smtp_pass)
+                    result = '✅ SMTP login successful!'
+            except Exception as e:
+                result = f'❌ Error: {e}'
+            self._send(200, 'text/html; charset=utf-8', f'''
+<html><body style="font-family:sans-serif;padding:40px;max-width:600px;margin:0 auto">
+  <h2>🔧 SMTP Debug</h2>
+  <p><b>SMTP_HOST:</b> {smtp_host}</p>
+  <p><b>SMTP_PORT:</b> {smtp_port}</p>
+  <p><b>SMTP_EMAIL:</b> {htmllib.escape(smtp_user) if smtp_user else '❌ NOT SET'}</p>
+  <p><b>SMTP_PASSWORD:</b> {'✅ set (' + str(len(smtp_pass)) + ' chars)' if smtp_pass else '❌ NOT SET'}</p>
+  <h3>Connection test: {result}</h3>
+  <a href="/">← Back</a>
+</body></html>''')
+
         elif path == '/test-email':
             uid, uname = self._authed()
             if not uid:
