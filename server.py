@@ -8,7 +8,7 @@ Run: python3 server.py
 """
 import json, re, os, time, io, urllib.request, urllib.parse, html as htmllib
 import zipfile, xml.etree.ElementTree as ET, sqlite3, hashlib, secrets, hmac, base64
-import http.cookies, smtplib, random
+import http.cookies, smtplib, random, threading
 from email.mime.text import MIMEText
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -196,6 +196,91 @@ def create_pending(name, contact, pw):
         'expires': now + 600,  # 10 minutes
     }
     return token, code
+
+def get_all_subscribers():
+    """Return list of (email, name) for all users with email addresses."""
+    conn, pg = _get_conn()
+    ph = _ph(pg)
+    try:
+        if pg:
+            cur = conn.cursor()
+            cur.execute('SELECT email, name FROM users')
+            rows = cur.fetchall()
+        else:
+            rows = conn.execute('SELECT email, name FROM users').fetchall()
+        # Only email addresses (not phone numbers)
+        return [(r[0], r[1]) for r in rows if '@' in r[0]]
+    except Exception as e:
+        print(f'  [subscribers] {e}')
+        return []
+    finally:
+        conn.close()
+
+
+def send_alert_email(to_email, name, short_picks, long_picks):
+    """Send a scan-results alert email to one subscriber."""
+    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
+    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
+    smtp_user = os.environ.get('SMTP_EMAIL', '')
+    smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+    if not smtp_user or not smtp_pass:
+        return False
+
+    def fmt_picks(picks, label):
+        if not picks:
+            return ''
+        lines = [f'\n{label}']
+        for p in picks[:4]:
+            congress = ' 🏛️ Congress confirmed' if p.get('congressConfirmed') else ''
+            lines.append(f'  • ${p["symbol"]} ({p["name"]}) — {p["signal"]} — Score {p["score"]}{congress}')
+        return '\n'.join(lines)
+
+    short_section = fmt_picks(short_picks, '⚡ Short Hold (Days–Weeks):')
+    long_section  = fmt_picks(long_picks,  '🏦 Long Hold (Weeks–Months):')
+
+    body = (
+        f'Hi {name},\n\n'
+        f'StockScout just completed a new scan. Here are today\'s top picks:\n'
+        f'{short_section}'
+        f'{long_section}\n\n'
+        f'Log in to see the full analysis, charts, and why each stock was picked:\n'
+        f'https://stockscout.up.railway.app\n\n'
+        f'— StockScout\n\n'
+        f'To unsubscribe, reply with "unsubscribe" or visit:\n'
+        f'https://stockscout.up.railway.app/unsubscribe?email={urllib.parse.quote(to_email)}'
+    )
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = f'📡 StockScout: {len(short_picks)+len(long_picks)} new picks today'
+        msg['From']    = smtp_user
+        msg['To']      = to_email
+        with smtplib.SMTP(smtp_host, smtp_port) as s:
+            s.starttls()
+            s.login(smtp_user, smtp_pass)
+            s.send_message(msg)
+        return True
+    except Exception as e:
+        print(f'  [alert] Email to {to_email} failed: {e}')
+        return False
+
+
+def send_alerts_to_all(short_picks, long_picks):
+    """Send scan-result emails to all subscribers in background threads."""
+    subscribers = get_all_subscribers()
+    if not subscribers:
+        print('  [alert] No subscribers to notify')
+        return
+    sent, failed = 0, 0
+    with ThreadPoolExecutor(max_workers=5) as ex:
+        futures = {ex.submit(send_alert_email, email, name, short_picks, long_picks): email
+                   for email, name in subscribers}
+        for f in as_completed(futures):
+            if f.result():
+                sent += 1
+            else:
+                failed += 1
+    print(f'  [alert] Sent {sent} emails, {failed} failed')
+
 
 def send_email_code(to_email, code, name):
     smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
@@ -1395,6 +1480,9 @@ def run_research():
     confirmed_count = sum(1 for r in results if r['congressConfirmed'])
     strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')
     _log(f'🎯  {len(results)} picks — {confirmed_count} Congress-confirmed, {strong} strong setups')
+    _log(f'📧  Sending email alerts to subscribers...')
+    # Fire-and-forget in background so it doesn't block the response
+    threading.Thread(target=send_alerts_to_all, args=(short_picks, long_picks), daemon=True).start()
     _log(f'✅  Done! Showing results now...')
     _scan_done = True
 
@@ -1501,6 +1589,25 @@ class Handler(BaseHTTPRequestHandler):
                 f'<a href="/logout" style="color:#ef4444;font-size:.78rem;text-decoration:none;margin-left:14px;font-weight:600">Sign out</a>'
             )
             self._send(200, 'text/html; charset=utf-8', html)
+
+        elif path == '/unsubscribe':
+            params = urllib.parse.parse_qs(self.path.split('?',1)[1] if '?' in self.path else '')
+            email  = params.get('email', [''])[0]
+            if email:
+                conn, pg = _get_conn()
+                ph = _ph(pg)
+                try:
+                    if pg:
+                        conn.cursor().execute(f'DELETE FROM users WHERE email={ph}', (email,))
+                    else:
+                        conn.execute(f'DELETE FROM users WHERE email={ph}', (email,))
+                    conn.commit()
+                finally:
+                    conn.close()
+            self._send(200, 'text/html; charset=utf-8',
+                       '<html><body style="font-family:sans-serif;padding:40px;text-align:center">'
+                       '<h2>✅ Unsubscribed</h2><p>You\'ve been removed from StockScout alerts.</p>'
+                       '<a href="/">← Back to StockScout</a></body></html>')
 
         elif path == '/progress':
             uid, _ = self._authed()
