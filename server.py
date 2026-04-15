@@ -1614,6 +1614,21 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, 'text/html; charset=utf-8', html)
 
+        elif path == '/test-email':
+            uid, uname = self._authed()
+            if not uid:
+                self._redirect('/login')
+                return
+            # Send a test email immediately using last scan results or dummy data
+            test_short = [{'symbol':'AAPL','name':'Apple Inc','signal':'Strong Setup','score':82,'congressConfirmed':True}]
+            test_long  = [{'symbol':'OXY','name':'Occidental Petroleum','signal':'Worth Watching','score':67,'congressConfirmed':False}]
+            threading.Thread(target=send_alerts_to_all, args=(test_short, test_long), daemon=True).start()
+            self._send(200, 'text/html; charset=utf-8',
+                '<html><body style="font-family:sans-serif;padding:40px;text-align:center">'
+                '<h2>✅ Test email sent!</h2>'
+                '<p>Check your inbox in a few seconds. Make sure your email is signed up.</p>'
+                '<a href="/">← Back to StockScout</a></body></html>')
+
         elif path == '/unsubscribe':
             params = urllib.parse.parse_qs(self.path.split('?',1)[1] if '?' in self.path else '')
             email  = params.get('email', [''])[0]
