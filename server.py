@@ -1732,10 +1732,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=code))
             else:
                 sent = send_email_code(contact, code, name)
-                show = code if sent is None else None
-                if sent is False:
-                    self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Could not send verification email. Please try again.'))
-                    return
+                # If email fails or isn't configured, show code on screen so signup still works
+                show = code if (sent is None or sent is False) else None
                 self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=show))
 
         elif path == '/verify':
