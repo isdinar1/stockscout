@@ -278,10 +278,15 @@ def send_alert_email(to_email, name, short_picks, long_picks):
         msg['From']    = smtp_user
         msg['To']      = to_email
         msg.attach(MIMEText(html_body, 'html'))
-        with smtplib.SMTP(smtp_host, smtp_port) as s:
-            s.starttls()
-            s.login(smtp_user, smtp_pass)
-            s.send_message(msg)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as s:
+                s.starttls()
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
         return True
     except Exception as e:
         print(f'  [alert] Email to {to_email} failed: {e}')
@@ -321,10 +326,15 @@ def send_email_code(to_email, code, name):
         msg['Subject'] = f'Your StockScout code: {code}'
         msg['From']    = smtp_user
         msg['To']      = to_email
-        with smtplib.SMTP(smtp_host, smtp_port) as s:
-            s.starttls()
-            s.login(smtp_user, smtp_pass)
-            s.send_message(msg)
+        if smtp_port == 465:
+            with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
+        else:
+            with smtplib.SMTP(smtp_host, smtp_port) as s:
+                s.starttls()
+                s.login(smtp_user, smtp_pass)
+                s.send_message(msg)
         return True
     except Exception as e:
         print(f'  [verify] Email send failed: {e}')
@@ -1622,12 +1632,17 @@ class Handler(BaseHTTPRequestHandler):
             smtp_pass = os.environ.get('SMTP_PASSWORD', '')
             result = 'Not tested'
             try:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
-                    s.ehlo()
-                    s.starttls()
-                    s.ehlo()
-                    s.login(smtp_user, smtp_pass)
-                    result = '✅ SMTP login successful!'
+                if smtp_port == 465:
+                    with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
+                        s.login(smtp_user, smtp_pass)
+                        result = '✅ SMTP login successful!'
+                else:
+                    with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
+                        s.ehlo()
+                        s.starttls()
+                        s.ehlo()
+                        s.login(smtp_user, smtp_pass)
+                        result = '✅ SMTP login successful!'
             except Exception as e:
                 result = f'❌ Error: {e}'
             self._send(200, 'text/html; charset=utf-8', f'''
@@ -1752,16 +1767,27 @@ class Handler(BaseHTTPRequestHandler):
             if email and not is_email(email):
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Please enter a valid email address.'))
                 return
-            # Create pending and send/show code
+            # Try to send verification email; if it works use code flow, otherwise create account directly
             token, code = create_pending(name, contact, pw)
             if is_phone(contact):
-                # Always show code on screen for phone — no SMS required
                 self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=code))
             else:
                 sent = send_email_code(contact, code, name)
-                # If email fails or isn't configured, show code on screen so signup still works
-                show = code if (sent is None or sent is False) else None
-                self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=show))
+                if sent is True:
+                    # Email sent — ask them to enter code
+                    self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=None))
+                else:
+                    # Email not configured or failed — create account directly, no verification needed
+                    result = create_user(contact, name, None, pw_hash=_pending.pop(token, {}).get('pw') or _hash(pw))
+                    if not result:
+                        self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Account already exists. Please sign in.'))
+                        return
+                    uid2, uname2 = result
+                    sess = new_session(uid2, uname2)
+                    self.send_response(302)
+                    self.send_header('Location', '/')
+                    self.send_header('Set-Cookie', self._cookie_header(sess))
+                    self.end_headers()
 
         elif path == '/verify':
             token = params.get('token','').strip()
