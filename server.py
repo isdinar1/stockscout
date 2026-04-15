@@ -1619,15 +1619,33 @@ class Handler(BaseHTTPRequestHandler):
             if not uid:
                 self._redirect('/login')
                 return
-            # Send a test email immediately using last scan results or dummy data
+
+            smtp_user = os.environ.get('SMTP_EMAIL', '')
+            smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+            subscribers = get_all_subscribers()
+
             test_short = [{'symbol':'AAPL','name':'Apple Inc','signal':'Strong Setup','score':82,'congressConfirmed':True}]
             test_long  = [{'symbol':'OXY','name':'Occidental Petroleum','signal':'Worth Watching','score':67,'congressConfirmed':False}]
-            threading.Thread(target=send_alerts_to_all, args=(test_short, test_long), daemon=True).start()
-            self._send(200, 'text/html; charset=utf-8',
-                '<html><body style="font-family:sans-serif;padding:40px;text-align:center">'
-                '<h2>✅ Test email sent!</h2>'
-                '<p>Check your inbox in a few seconds. Make sure your email is signed up.</p>'
-                '<a href="/">← Back to StockScout</a></body></html>')
+
+            results_html = ''
+            for email, name in subscribers:
+                ok = send_alert_email(email, name, test_short, test_long)
+                icon = '✅' if ok else '❌'
+                results_html += f'<li>{icon} {htmllib.escape(email)} ({htmllib.escape(name)})</li>'
+
+            if not subscribers:
+                results_html = '<li>⚠️ No subscribers found in database</li>'
+
+            self._send(200, 'text/html; charset=utf-8', f'''
+<html><body style="font-family:sans-serif;padding:40px;max-width:600px;margin:0 auto">
+  <h2>📧 Test Email Results</h2>
+  <p><b>SMTP_EMAIL set:</b> {"✅ " + htmllib.escape(smtp_user) if smtp_user else "❌ NOT SET"}</p>
+  <p><b>SMTP_PASSWORD set:</b> {"✅ yes" if smtp_pass else "❌ NOT SET"}</p>
+  <p><b>Subscribers found:</b> {len(subscribers)}</p>
+  <h3>Results:</h3>
+  <ul>{results_html}</ul>
+  <a href="/">← Back to StockScout</a>
+</body></html>''')
 
         elif path == '/unsubscribe':
             params = urllib.parse.parse_qs(self.path.split('?',1)[1] if '?' in self.path else '')
