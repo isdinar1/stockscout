@@ -1476,9 +1476,14 @@ def extract_tickers_from_headlines(headlines):
 # ── Main research pipeline ────────────────────────────────────────────────────
 
 def run_research():
-    global _progress, _scan_done
+    global _progress, _scan_done, _congress_cache, _congress_ts, _legislators_cache, _legislators_ts
     _progress = []
     _scan_done = False
+    # Always clear caches so every scan fetches fresh news, congress trades, and stock prices
+    _congress_cache    = None
+    _congress_ts       = 0
+    _legislators_cache = None
+    _legislators_ts    = 0
 
     # ── Steps 1+2: Fetch news AND congress trades in parallel ────────────────
     _log('🌍  Scanning news and Congressional disclosures simultaneously...')
