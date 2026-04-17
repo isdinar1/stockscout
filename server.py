@@ -1210,8 +1210,11 @@ def enrich_top(symbols, chart_cache=None):
         try:
             for sym in missing:
                 try:
-                    info = yf.Ticker(sym).fast_info
-                    out[sym] = {'name': sym, 'mc': getattr(info, 'market_cap', 0) or 0}
+                    t    = yf.Ticker(sym)
+                    info = t.info
+                    name = info.get('longName') or info.get('shortName') or sym
+                    mc   = info.get('marketCap', 0) or 0
+                    out[sym] = {'name': name, 'mc': mc}
                 except Exception:
                     out[sym] = {'name': sym, 'mc': 0}
         except Exception as e:
@@ -1668,9 +1671,6 @@ def run_research():
     confirmed_count = sum(1 for r in results if r['congressConfirmed'])
     strong          = sum(1 for r in results if r['signal'] == 'Strong Setup')
     _log(f'🎯  {len(results)} picks — {confirmed_count} Congress-confirmed, {strong} strong setups')
-    _log(f'📧  Sending email alerts to subscribers...')
-    # Fire-and-forget in background so it doesn't block the response
-    threading.Thread(target=send_alerts_to_all, args=(short_picks, long_picks), daemon=True).start()
     _log(f'✅  Done! Showing results now...')
     _scan_done = True
 
