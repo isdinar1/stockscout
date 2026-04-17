@@ -218,13 +218,13 @@ def get_all_subscribers():
 
 
 def send_alert_email(to_email, name, short_picks, long_picks):
-    """Send a scan-results alert email to one subscriber."""
-    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-    smtp_user = os.environ.get('SMTP_EMAIL', '')
-    smtp_pass = os.environ.get('SMTP_PASSWORD', '')
-    site_url  = os.environ.get('SITE_URL', 'https://stockscout.up.railway.app')
-    if not smtp_user or not smtp_pass:
+    """Send a scan-results alert email via Brevo HTTP API (avoids SMTP port blocks)."""
+    import json as _json
+    import urllib.request as _req
+    brevo_key = os.environ.get('BREVO_API_KEY', '')
+    from_email = os.environ.get('SMTP_EMAIL', 'stock_scout@yahoo.com')
+    site_url   = os.environ.get('SITE_URL', 'https://stockscout.up.railway.app')
+    if not brevo_key:
         return False
 
     def pick_rows(picks, label, color):
@@ -253,7 +253,7 @@ def send_alert_email(to_email, name, short_picks, long_picks):
     html_body = f'''
 <div style="font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:24px">
   <h1 style="color:#dc2626;margin-bottom:4px">📡 StockScout</h1>
-  <p style="color:#6b7280;margin-top:0">Daily Market Alert</p>
+  <p style="color:#6b7280;margin-top:0">Market Alert</p>
   <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
   <p style="color:#111827">Hi <b>{name}</b>,</p>
   <p style="color:#374151">Here are today's top stock picks based on world news and Congressional trading disclosures:</p>
@@ -271,23 +271,26 @@ def send_alert_email(to_email, name, short_picks, long_picks):
   </p>
 </div>'''
 
+    payload = _json.dumps({
+        'sender':  {'name': 'StockScout', 'email': from_email},
+        'to':      [{'email': to_email, 'name': name}],
+        'subject': f'📡 StockScout: {len(short_picks)+len(long_picks)} new picks',
+        'htmlContent': html_body,
+    }).encode()
+
     try:
-        from email.mime.multipart import MIMEMultipart
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = f'📡 StockScout: {len(short_picks)+len(long_picks)} new picks today'
-        msg['From']    = smtp_user
-        msg['To']      = to_email
-        msg.attach(MIMEText(html_body, 'html'))
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
-                s.login(smtp_user, smtp_pass)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port) as s:
-                s.starttls()
-                s.login(smtp_user, smtp_pass)
-                s.send_message(msg)
-        return True
+        request = _req.Request(
+            'https://api.brevo.com/v3/smtp/email',
+            data=payload,
+            headers={
+                'api-key':      brevo_key,
+                'Content-Type': 'application/json',
+                'Accept':       'application/json',
+            },
+            method='POST'
+        )
+        with _req.urlopen(request, timeout=15) as resp:
+            return resp.status in (200, 201)
     except Exception as e:
         print(f'  [alert] Email to {to_email} failed: {e}')
         return False
@@ -411,7 +414,7 @@ def auth_page(mode='login', error=''):
       </div>
       <div id="tab-email" class="field">
         <label>Email address</label>
-        <input type="email" name="email" placeholder="you@example.com" autocomplete="email"/>
+        <input type="email" name="email" placeholder="you@example.com" autocomplete="email" required/>
       </div>
       <div id="tab-phone" class="field" style="display:none">
         <label>Phone number</label>
@@ -1625,35 +1628,32 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, 'text/html; charset=utf-8', html)
 
         elif path == '/debug-smtp':
-            # Shows the exact SMTP error so we can fix it
-            smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-            smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-            smtp_user = os.environ.get('SMTP_EMAIL', '')
-            smtp_pass = os.environ.get('SMTP_PASSWORD', '')
+            import json as _json, urllib.request as _req
+            brevo_key  = os.environ.get('BREVO_API_KEY', '')
+            smtp_email = os.environ.get('SMTP_EMAIL', '')
             result = 'Not tested'
             try:
-                if smtp_port == 465:
-                    with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
-                        s.login(smtp_user, smtp_pass)
-                        result = '✅ SMTP login successful!'
+                if not brevo_key:
+                    result = '❌ BREVO_API_KEY not set'
                 else:
-                    with smtplib.SMTP(smtp_host, smtp_port, timeout=10) as s:
-                        s.ehlo()
-                        s.starttls()
-                        s.ehlo()
-                        s.login(smtp_user, smtp_pass)
-                        result = '✅ SMTP login successful!'
+                    # Hit Brevo account endpoint to verify key works
+                    req2 = _req.Request(
+                        'https://api.brevo.com/v3/account',
+                        headers={'api-key': brevo_key, 'Accept': 'application/json'},
+                        method='GET'
+                    )
+                    with _req.urlopen(req2, timeout=10) as r:
+                        data = _json.loads(r.read())
+                        result = f'✅ Brevo API key valid! Account: {data.get("email","?")}'
             except Exception as e:
                 result = f'❌ Error: {e}'
             self._send(200, 'text/html; charset=utf-8', f'''
 <html><body style="font-family:sans-serif;padding:40px;max-width:600px;margin:0 auto">
-  <h2>🔧 SMTP Debug</h2>
-  <p><b>SMTP_HOST:</b> {smtp_host}</p>
-  <p><b>SMTP_PORT:</b> {smtp_port}</p>
-  <p><b>SMTP_EMAIL:</b> {htmllib.escape(smtp_user) if smtp_user else '❌ NOT SET'}</p>
-  <p><b>SMTP_PASSWORD:</b> {'✅ set (' + str(len(smtp_pass)) + ' chars)' if smtp_pass else '❌ NOT SET'}</p>
-  <h3>Connection test: {result}</h3>
-  <a href="/">← Back</a>
+  <h2>🔧 Email Debug</h2>
+  <p><b>BREVO_API_KEY:</b> {'✅ set (' + str(len(brevo_key)) + ' chars)' if brevo_key else '❌ NOT SET'}</p>
+  <p><b>SMTP_EMAIL (sender):</b> {htmllib.escape(smtp_email) if smtp_email else '❌ NOT SET'}</p>
+  <h3>API test: {result}</h3>
+  <a href="/test-email">Send test email →</a>&nbsp;&nbsp;<a href="/">← Back</a>
 </body></html>''')
 
         elif path == '/test-email':
