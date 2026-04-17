@@ -1502,7 +1502,7 @@ def run_research():
     long_picks  = [r for r in results if r['holdType'] == 'long']
 
     # Force exactly 8 each — reclassify overflow from the larger group if needed
-    TARGET = 8
+    TARGET = 4
     while len(short_picks) < TARGET and len(long_picks) > TARGET:
         r = long_picks.pop(TARGET)
         r['holdType'] = 'short'
