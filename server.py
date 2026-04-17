@@ -232,21 +232,23 @@ def send_alert_email(to_email, name, short_picks, long_picks):
             return ''
         rows = ''
         for p in picks[:4]:
-            congress = '&nbsp;🏛️ <b>Congress confirmed</b>' if p.get('congressConfirmed') else ''
+            congress = '<br><span style="color:#6366f1;font-size:.72rem;font-weight:600">🏛️ Congress confirmed</span>' if p.get('congressConfirmed') else ''
             rows += (
                 f'<tr style="border-bottom:1px solid #e5e7eb">'
-                f'<td style="padding:10px 8px;font-weight:800;color:{color}">${p["symbol"]}</td>'
-                f'<td style="padding:10px 8px;color:#374151">{p["name"]}</td>'
-                f'<td style="padding:10px 8px;color:#374151">{p["signal"]}</td>'
-                f'<td style="padding:10px 8px;font-weight:700">{p["score"]}/100{congress}</td>'
+                f'<td style="padding:12px 10px;font-weight:800;font-size:1rem;color:{color};white-space:nowrap">${p["symbol"]}</td>'
+                f'<td style="padding:12px 10px;color:#111827;font-weight:600;word-break:break-word">{p["name"]}{congress}</td>'
+                f'<td style="padding:12px 10px;color:#374151;font-size:.85rem">{p["signal"]}</td>'
+                f'<td style="padding:12px 10px;font-weight:700;white-space:nowrap;text-align:right">{p["score"]}/100</td>'
                 f'</tr>'
             )
         return (
-            f'<h3 style="margin:24px 0 8px;color:#111827">{label}</h3>'
-            f'<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden">'
-            f'<tr style="background:#f3f4f6;font-size:.75rem;color:#6b7280;text-transform:uppercase">'
-            f'<th style="padding:8px">Ticker</th><th style="padding:8px">Company</th>'
-            f'<th style="padding:8px">Signal</th><th style="padding:8px">Score</th></tr>'
+            f'<h3 style="margin:28px 0 10px;color:#111827;font-size:1rem">{label}</h3>'
+            f'<table style="width:100%;border-collapse:collapse;background:#f9fafb;border-radius:8px;overflow:hidden;font-size:.88rem">'
+            f'<tr style="background:#f3f4f6;font-size:.72rem;color:#6b7280;text-transform:uppercase;letter-spacing:.05em">'
+            f'<th style="padding:8px 10px;text-align:left">Ticker</th>'
+            f'<th style="padding:8px 10px;text-align:left">Company</th>'
+            f'<th style="padding:8px 10px;text-align:left">Signal</th>'
+            f'<th style="padding:8px 10px;text-align:right">Score</th></tr>'
             f'{rows}</table>'
         )
 
@@ -513,21 +515,32 @@ def verify_page(token, contact, error='', show_code=None):
 # These are stocks we screen when a relevant news theme fires.
 # Deliberately excludes mega-caps (AAPL, MSFT, etc.) — they're already priced in.
 SECTORS = {
-    'oil':       ['OXY','DVN','SM','CIVI','MGY','VTLE','CPE','NOG','MTDR','CTRA','MRO','CLR'],
-    'nat_gas':   ['AR','EQT','RRC','SWN','CNX','GPOR','CRK'],
-    'defense':   ['KTOS','AVAV','DRS','VSEC','HEI','MOOG','TDY','AXON','LDOS'],
-    'semis':     ['WOLF','POWI','COHU','ONTO','ACLS','AMBA','CEVA','FORM','SITM','ALGM'],
-    'gold':      ['AU','HL','CDE','EXK','AGI','MAG','GATO','SAND','ASA'],
-    'uranium':   ['UEC','DNN','URG','UUUU','EU','LTBR','NXE'],
-    'shipping':  ['SBLK','GOGL','NMM','GNK','SALT','EDRY','GRIN','EGLE'],
-    'china':     ['BABA','JD','PDD','NIO','XPEV','LI','BILI','VIPS','TIGR'],
-    'biotech':   ['SAVA','AGEN','SNDX','CTIC','ICAD','GLYC','PRME','APLT','AVDL'],
-    'solar':     ['ARRY','CSIQ','JKS','DAQO','RUN','NOVA','SHLS','FLNC'],
-    'retail':    ['FIVE','GCO','PLCE','CATO','DXLG','PRTY','GOOS','BIG','CONN'],
-    'reit':      ['NXRT','SAFE','GMRE','GOOD','NLCP','BRSP','CLNC','KREF'],
-    'ev':        ['RIDE','GOEV','WKHS','FSR','NKLA','SOLO','AYRO','ELMS'],
-    'steel':     ['CLF','X','CMC','STLD','ATI','HAYN','KALU'],
-    'airlines':  ['SAVE','ALGT','HA','SY','SKYW','MESA'],
+    'oil':        ['OXY','DVN','SM','CIVI','MGY','VTLE','CPE','NOG','MTDR','CTRA','MRO','CLR'],
+    'nat_gas':    ['AR','EQT','RRC','SWN','CNX','GPOR','CRK'],
+    'defense':    ['KTOS','AVAV','DRS','VSEC','HEI','MOOG','TDY','AXON','LDOS','LMT','NOC','RTX','GD'],
+    'semis':      ['WOLF','POWI','COHU','ONTO','ACLS','AMBA','CEVA','FORM','SITM','ALGM','NVDA','AMD','INTC','QCOM'],
+    'gold':       ['AU','HL','CDE','EXK','AGI','MAG','GATO','SAND','ASA'],
+    'uranium':    ['UEC','DNN','URG','UUUU','EU','LTBR','NXE'],
+    'shipping':   ['SBLK','GOGL','NMM','GNK','SALT','EDRY','GRIN','EGLE'],
+    'china':      ['BABA','JD','PDD','NIO','XPEV','LI','BILI','VIPS','TIGR'],
+    'biotech':    ['SAVA','AGEN','SNDX','CTIC','ICAD','GLYC','PRME','APLT','AVDL','MRNA','BNTX','NVAX'],
+    'pharma':     ['PFE','MRK','ABBV','BMY','LLY','JNJ','RHHBY','AZN','GILD','REGN','BIIB'],
+    'solar':      ['ARRY','CSIQ','JKS','DAQO','RUN','NOVA','SHLS','FLNC'],
+    'retail':     ['FIVE','GCO','PLCE','CATO','DXLG','PRTY','GOOS','BIG','CONN'],
+    'reit':       ['NXRT','SAFE','GMRE','GOOD','NLCP','BRSP','CLNC','KREF'],
+    'ev':         ['TSLA','RIVN','LCID','FSR','NKLA','GOEV','WKHS'],
+    'steel':      ['CLF','X','CMC','STLD','ATI','HAYN','KALU'],
+    'airlines':   ['SAVE','ALGT','HA','SY','SKYW','MESA','DAL','UAL','AAL','LUV'],
+    'gaming':     ['ATVI','EA','TTWO','RBLX','MSFT','NTDOY','SNE','PLTK','GLBE','HOOK'],
+    'streaming':  ['NFLX','DIS','PARA','WBD','AMZN','SPOT','FUBO','ROKU'],
+    'social':     ['META','SNAP','PINS','TWTR','RDDT','BMBL','MTCH'],
+    'crypto':     ['COIN','MSTR','RIOT','MARA','HUT','CLSK','BITF','BTBT'],
+    'travel':     ['BKNG','EXPE','ABNB','TRIP','LYFT','UBER','GRAB'],
+    'food':       ['BYND','APPH','APPS','SFM','HAIN','TTCF','BRFS','VERY'],
+    'cybersec':   ['CRWD','S','PANW','ZS','FTNT','CYBR','TENB','VRNS','RPD'],
+    'space':      ['RKLB','ASTS','LUNR','KTOS','VACQ','SPCE','MNTS','ASTR'],
+    'cannabis':   ['TLRY','CGC','ACB','CURLF','GTBIF','TCNNF','CRLBF'],
+    'weight_loss':['LLY','NVO','HIMS','GUTS','AMGN','VKTX','ZAFG','CGON'],
 }
 
 # ── Theme definitions ─────────────────────────────────────────────────────────
@@ -700,6 +713,120 @@ THEMES = [
         'logic': 'Infrastructure spending cycles directly boost domestic steel demand. '
                  'Mid-cap US steel producers benefit from both volume increases and '
                  'anti-dumping protection from imports.',
+    },
+    {
+        'id': 'gaming_release',
+        'icon': '🎮',
+        'title': 'Major Game Release / Gaming Surge',
+        'detect': ['gta 6','grand theft auto','gta vi','call of duty','game release','gaming revenue',
+                   'playstation','xbox','nintendo','video game sales','gaming record','esports',
+                   'fortnite','minecraft','game launch','gaming stock','take-two','rockstar games',
+                   'activision','ea sports','game sales','console launch'],
+        'up': ['gaming'],
+        'down': [],
+        'logic': 'Major game releases drive massive spikes in revenue for publishers and platform holders. '
+                 'GTA 6, Call of Duty, or console launches can move gaming stocks 10-30%. '
+                 'Cross-reference with Congress members who hold gaming stocks.',
+    },
+    {
+        'id': 'streaming_content',
+        'icon': '🎬',
+        'title': 'Streaming / Entertainment Surge',
+        'detect': ['netflix','streaming','disney plus','hbo max','subscriber growth','content deal',
+                   'box office','movie release','hollywood','entertainment spending','streaming wars',
+                   'cord cutting','streaming revenue','paramount','warner bros','apple tv'],
+        'up': ['streaming'],
+        'down': [],
+        'logic': 'Blockbuster content, subscriber beats, or major content deals move streaming stocks sharply. '
+                 'Subscriber growth surprises are the single biggest catalyst for streaming valuations.',
+    },
+    {
+        'id': 'drug_approval',
+        'icon': '💊',
+        'title': 'FDA Drug Approval / Medical Breakthrough',
+        'detect': ['fda approval','fda approves','drug approved','clinical trial','phase 3','breakthrough therapy',
+                   'new medicine','cancer treatment','alzheimer','diabetes drug','weight loss drug',
+                   'ozempic','wegovy','glp-1','drug trial','medical breakthrough','fda clears',
+                   'new treatment','cure','vaccine approved','drug application'],
+        'up': ['pharma', 'biotech', 'weight_loss'],
+        'down': [],
+        'logic': 'FDA approvals can double or triple biotech stocks overnight. Weight loss drugs (GLP-1) '
+                 'are reshaping pharma. Cancer and Alzheimer breakthroughs move entire sectors. '
+                 'Congress members often hold pharma stocks ahead of key decisions.',
+    },
+    {
+        'id': 'crypto_surge',
+        'icon': '₿',
+        'title': 'Crypto / Bitcoin Rally',
+        'detect': ['bitcoin','crypto','ethereum','btc','cryptocurrency','coinbase','digital asset',
+                   'crypto rally','bitcoin price','crypto adoption','blockchain','defi','nft',
+                   'bitcoin etf','crypto regulation','stablecoin','solana','crypto bull'],
+        'up': ['crypto'],
+        'down': [],
+        'logic': 'Bitcoin price moves drag the entire crypto ecosystem. Mining stocks move 2-3x BTC. '
+                 'Coinbase revenue is directly tied to trading volume which spikes in bull runs.',
+    },
+    {
+        'id': 'cybersecurity_threat',
+        'icon': '🔐',
+        'title': 'Cyberattack / Security Threat',
+        'detect': ['cyberattack','ransomware','data breach','hack','cybersecurity','cyber threat',
+                   'nation state attack','infrastructure hack','cybercrime','security breach',
+                   'zero day','malware','phishing attack','cyber warfare'],
+        'up': ['cybersec'],
+        'down': [],
+        'logic': 'High-profile cyberattacks drive immediate government and corporate spending on security. '
+                 'Cybersecurity stocks often jump 5-15% following major breach news as companies '
+                 'rush to upgrade their defenses.',
+    },
+    {
+        'id': 'space_launch',
+        'icon': '🚀',
+        'title': 'Space / Satellite News',
+        'detect': ['spacex','rocket launch','satellite','nasa','space station','lunar','moon mission',
+                   'space contract','rocket lab','asts','starlink','space force','orbit','space exploration',
+                   'space economy','space tourism','space defense'],
+        'up': ['space', 'defense'],
+        'down': [],
+        'logic': 'Space contracts and successful launches are major catalysts for small-cap space stocks. '
+                 'Companies like Rocket Lab and AST SpaceMobile can move 20-50% on contract news.',
+    },
+    {
+        'id': 'social_media',
+        'icon': '📱',
+        'title': 'Social Media / Tech Platform News',
+        'detect': ['tiktok','instagram','facebook','meta','snapchat','twitter','x.com','reddit',
+                   'social media','ad revenue','user growth','platform ban','tiktok ban',
+                   'social platform','influencer','viral','algorithm'],
+        'up': ['social'],
+        'down': [],
+        'logic': 'Platform bans, ad revenue beats, or user growth surprises move social media stocks sharply. '
+                 'A TikTok ban directly benefits Meta, Snap, and Pinterest as users migrate.',
+    },
+    {
+        'id': 'travel_boom',
+        'icon': '✈️',
+        'title': 'Travel / Tourism Boom',
+        'detect': ['travel demand','airline','hotel','tourism','vacation','summer travel','travel record',
+                   'airfare','booking','uber','lyft','travel surge','international travel',
+                   'cruise','resort','hospitality'],
+        'up': ['travel', 'airlines'],
+        'down': [],
+        'logic': 'Travel demand surges post-disruption create outsized moves in travel stocks. '
+                 'Booking platforms and airlines with high operating leverage see the biggest earnings swings.',
+    },
+    {
+        'id': 'weight_loss_drugs',
+        'icon': '⚕️',
+        'title': 'Weight Loss / GLP-1 Drug News',
+        'detect': ['ozempic','wegovy','glp-1','semaglutide','tirzepatide','mounjaro','weight loss drug',
+                   'obesity drug','diabetes treatment','eli lilly','novo nordisk','hims','weight loss pill',
+                   'appetite suppressant','bariatric'],
+        'up': ['weight_loss', 'pharma'],
+        'down': ['food'],
+        'logic': 'GLP-1 weight loss drugs are the biggest pharma story. New approvals, trial results, '
+                 'or generic competition moves the entire space. Eli Lilly and Novo Nordisk are the '
+                 'dominant players but smaller competitors offer higher upside.',
     },
 ]
 
@@ -939,12 +1066,36 @@ def get_news():
 
     # Fetch all RSS feeds in parallel
     google_queries = [
-        'oil prices ceasefire OPEC tariffs stock market',
+        # Markets & macro
+        'oil prices OPEC tariffs stock market',
         'federal reserve interest rates inflation',
         'china tariffs trade war sanctions',
         'gold price rally safe haven',
         'nuclear uranium energy AI data center',
         'shipping freight rates Red Sea',
+        # Tech & gaming
+        'GTA 6 grand theft auto rockstar games release date',
+        'video game sales gaming revenue console launch',
+        'nvidia AMD semiconductors chip demand AI',
+        'cybersecurity hack ransomware data breach',
+        'bitcoin crypto ethereum rally regulation',
+        # Entertainment & streaming
+        'netflix disney streaming subscriber revenue',
+        'box office movie release hollywood entertainment',
+        'tiktok instagram meta social media ad revenue',
+        # Pharma & medicine
+        'FDA approval drug trial breakthrough medicine',
+        'ozempic wegovy GLP-1 weight loss drug eli lilly',
+        'cancer treatment alzheimer vaccine clinical trial',
+        # Space & defense
+        'spacex rocket launch satellite NASA contract',
+        'defense military contract lockheed northrop',
+        # Travel & consumer
+        'airline travel demand booking uber lyft',
+        'retail consumer spending earnings',
+        # Geopolitical
+        'ceasefire war conflict escalation military',
+        'ukraine russia israel iran middle east',
     ]
     urls = [f'https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=en-US&gl=US&ceid=US:en'
             for q in google_queries]
