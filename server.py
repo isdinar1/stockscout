@@ -1666,8 +1666,18 @@ class Handler(BaseHTTPRequestHandler):
             smtp_pass = os.environ.get('SMTP_PASSWORD', '')
             subscribers = get_all_subscribers()
 
-            test_short = [{'symbol':'AAPL','name':'Apple Inc','signal':'Strong Setup','score':82,'congressConfirmed':True}]
-            test_long  = [{'symbol':'OXY','name':'Occidental Petroleum','signal':'Worth Watching','score':67,'congressConfirmed':False}]
+            test_short = [
+                {'symbol':'NVDA','name':'NVIDIA Corporation','signal':'Strong Momentum','score':91,'congressConfirmed':True},
+                {'symbol':'AAPL','name':'Apple Inc','signal':'Strong Setup','score':82,'congressConfirmed':True},
+                {'symbol':'MSFT','name':'Microsoft Corporation','signal':'Bullish Signal','score':78,'congressConfirmed':False},
+                {'symbol':'AMD','name':'Advanced Micro Devices Inc','signal':'Breakout Watch','score':74,'congressConfirmed':False},
+            ]
+            test_long  = [
+                {'symbol':'OXY','name':'Occidental Petroleum Corporation','signal':'Worth Watching','score':67,'congressConfirmed':True},
+                {'symbol':'LMT','name':'Lockheed Martin Corporation','signal':'Conviction Hold','score':72,'congressConfirmed':True},
+                {'symbol':'BA','name':'Boeing Company','signal':'Recovery Play','score':65,'congressConfirmed':False},
+                {'symbol':'XOM','name':'Exxon Mobil Corporation','signal':'Steady Accumulation','score':70,'congressConfirmed':False},
+            ]
 
             results_html = ''
             for email, name in subscribers:
