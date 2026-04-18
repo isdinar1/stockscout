@@ -317,57 +317,41 @@ def send_alerts_to_all(short_picks, long_picks):
 
 
 def send_email_code(to_email, code, name):
-    smtp_host = os.environ.get('SMTP_HOST', 'smtp.gmail.com')
-    smtp_port = int(os.environ.get('SMTP_PORT', '587'))
-    smtp_user = os.environ.get('SMTP_EMAIL', '')
-    smtp_pass = os.environ.get('SMTP_PASSWORD', '')
-    if not smtp_user or not smtp_pass:
-        return None  # signal: no provider configured, show code on screen
-    try:
-        msg = MIMEText(
-            f'Hi {name},\n\nYour StockScout verification code is:\n\n'
-            f'  {code}\n\nThis code expires in 10 minutes.\n\n— StockScout'
-        )
-        msg['Subject'] = f'Your StockScout code: {code}'
-        msg['From']    = smtp_user
-        msg['To']      = to_email
-        if smtp_port == 465:
-            with smtplib.SMTP_SSL(smtp_host, smtp_port) as s:
-                s.login(smtp_user, smtp_pass)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(smtp_host, smtp_port) as s:
-                s.starttls()
-                s.login(smtp_user, smtp_pass)
-                s.send_message(msg)
-        return True
-    except Exception as e:
-        print(f'  [verify] Email send failed: {e}')
+    """Send verification code via Brevo HTTP API."""
+    import json as _json, urllib.request as _req
+    brevo_key  = os.environ.get('BREVO_API_KEY', '')
+    from_email = os.environ.get('SMTP_EMAIL', 'issadinar@icloud.com')
+    if not brevo_key:
         return False
-
-def send_sms_code(to_phone, code):
-    sid   = os.environ.get('TWILIO_SID', '')
-    token = os.environ.get('TWILIO_TOKEN', '')
-    from_ = os.environ.get('TWILIO_PHONE', '')
-    if not sid or not token or not from_:
-        return None  # signal: no provider configured, show code on screen
+    html_body = f'''
+<div style="font-family:-apple-system,sans-serif;max-width:480px;margin:0 auto;padding:32px">
+  <h1 style="color:#dc2626;margin-bottom:4px">📡 StockScout</h1>
+  <hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">
+  <p style="color:#111827">Hi <b>{name}</b>,</p>
+  <p style="color:#374151;margin:16px 0">Your verification code is:</p>
+  <div style="background:#f3f4f6;border-radius:12px;padding:24px;text-align:center;margin:20px 0">
+    <span style="font-size:2.5rem;font-weight:900;letter-spacing:.4em;color:#111827">{code}</span>
+  </div>
+  <p style="color:#6b7280;font-size:.85rem">This code expires in 10 minutes. If you didn't sign up for StockScout, ignore this email.</p>
+</div>'''
+    payload = _json.dumps({
+        'sender':      {'name': 'StockScout', 'email': from_email},
+        'to':          [{'email': to_email, 'name': name}],
+        'subject':     f'Your StockScout code: {code}',
+        'htmlContent': html_body,
+    }).encode()
     try:
-        data = urllib.parse.urlencode({
-            'From': from_, 'To': to_phone,
-            'Body': f'Your StockScout code is: {code}  (expires in 10 min)',
-        }).encode()
-        creds = base64.b64encode(f'{sid}:{token}'.encode()).decode()
-        req = urllib.request.Request(
-            f'https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json',
-            data=data, method='POST',
-            headers={'Authorization': f'Basic {creds}',
-                     'Content-Type': 'application/x-www-form-urlencoded'}
+        req = _req.Request(
+            'https://api.brevo.com/v3/smtp/email',
+            data=payload,
+            headers={'api-key': brevo_key, 'Content-Type': 'application/json', 'Accept': 'application/json'},
+            method='POST'
         )
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with _req.urlopen(req, timeout=15) as r:
             return r.status in (200, 201)
     except Exception as e:
-        print(f'  [verify] SMS send failed: {e}')
-        return None
+        print(f'  [verify] Email code send failed: {e}')
+        return False
 
 # ── Shared page CSS ───────────────────────────────────────────────────────────
 _PAGE_CSS = '''
@@ -407,47 +391,12 @@ def auth_page(mode='login', error=''):
       </div>'''
     contact_field = '''
       <div class="field">
-        <label>Email or Phone</label>
-        <input type="text" name="contact" placeholder="you@example.com  or  555-867-5309" required autocomplete="email"/>
-      </div>''' if is_login else '''
-      <div class="tabs">
-        <button type="button" class="tab active" onclick="switchTab('email')">Email</button>
-        <button type="button" class="tab" onclick="switchTab('phone')">Phone</button>
-      </div>
-      <div id="tab-email" class="field">
-        <label>Email address</label>
-        <input type="email" name="email" placeholder="you@example.com" autocomplete="email" required/>
-      </div>
-      <div id="tab-phone" class="field" style="display:none">
-        <label>Phone number</label>
-        <input type="tel" name="phone" placeholder="555-867-5309"
-               pattern="\\d{3}-\\d{3}-\\d{4}" maxlength="12"
-               oninput="fmtPhone(this)" autocomplete="tel"/>
-        <div style="color:#4b5e78;font-size:.72rem;margin-top:5px">Format: 555-867-5309</div>
+        <label>Email</label>
+        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email"/>
       </div>'''
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
-    extra_css = '''
-.tabs{display:flex;gap:8px;margin-bottom:16px}
-.tab{flex:1;background:#07090f;border:1px solid #1c2a40;border-radius:8px;color:#4b5e78;cursor:pointer;font-size:.82rem;font-weight:600;padding:8px;transition:all .2s}
-.tab.active{background:rgba(59,130,246,.12);border-color:#3b82f6;color:#60a5fa}
-''' if not is_login else ''
-    extra_js = '''
-<script>
-function switchTab(t){
-  document.querySelectorAll('.tab').forEach(b=>b.classList.remove('active'));
-  event.target.classList.add('active');
-  document.getElementById('tab-email').style.display = t==='email'?'':'none';
-  document.getElementById('tab-phone').style.display = t==='phone'?'':'none';
-  document.querySelector('#tab-email input').required = t==='email';
-  document.querySelector('#tab-phone input').required = t==='phone';
-}
-function fmtPhone(el){
-  let v=el.value.replace(/\\D/g,'');
-  if(v.length>6) v=v.slice(0,3)+'-'+v.slice(3,6)+'-'+v.slice(6,10);
-  else if(v.length>3) v=v.slice(0,3)+'-'+v.slice(3);
-  el.value=v;
-}
-</script>''' if not is_login else ''
+    extra_css = ''
+    extra_js = ''
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -473,20 +422,9 @@ function fmtPhone(el){
 
 # ── Verify page HTML ──────────────────────────────────────────────────────────
 def verify_page(token, contact, error='', show_code=None):
-    is_ph    = is_phone(contact)
-    masked   = contact[:3] + '***' + contact[contact.index('@'):] if not is_ph \
-               else contact[:3] + '-***-' + contact[-4:]
+    masked   = contact[:3] + '***' + contact[contact.index('@'):]
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
-    code_hint = ''
-    if show_code:
-        if is_ph:
-            code_hint = f'<div class="ok">Your verification code is: <strong style="font-size:1.3rem;letter-spacing:.2em">{show_code}</strong></div>'
-            sent_msg  = f'<p class="sub">Phone: <strong style="color:#e2e8f0">{htmllib.escape(contact)}</strong></p>'
-        else:
-            code_hint = f'<div class="ok">📬 Email not configured yet — your code is: <strong style="font-size:1.2rem;letter-spacing:.15em">{show_code}</strong></div>'
-            sent_msg  = '<p class="sub">Enter the code below to finish creating your account.</p>'
-    else:
-        sent_msg  = f'<p class="sub">We emailed a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>'
+    sent_msg = f'<p class="sub">We emailed a 6-digit code to <strong style="color:#e2e8f0">{htmllib.escape(masked)}</strong></p>'
     return f'''<!DOCTYPE html>
 <html lang="en"><head>
 <meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -494,9 +432,8 @@ def verify_page(token, contact, error='', show_code=None):
 <style>{_PAGE_CSS}</style></head><body>
 <div class="box">
   <div class="logo"><h1>📡 StockScout</h1><p>News-driven stock research</p></div>
-  <h2>One more step</h2>
+  <h2>Check your email</h2>
   {sent_msg}
-  {code_hint}
   {err_html}
   <form method="POST" action="/verify">
     <input type="hidden" name="token" value="{htmllib.escape(token)}"/>
@@ -507,7 +444,7 @@ def verify_page(token, contact, error='', show_code=None):
     </div>
     <button class="btn" type="submit">Verify &amp; Create Account</button>
   </form>
-  <div class="switch"><a href="/signup">← Use a different email or number</a></div>
+  <div class="switch"><a href="/signup">← Use a different email</a></div>
 </div>
 </body></html>'''
 
@@ -1913,47 +1850,22 @@ class Handler(BaseHTTPRequestHandler):
             email = params.get('email','').strip().lower()
             phone = params.get('phone','').strip()
             pw    = params.get('password','')
-            # Determine which contact method was used
-            if email:
-                contact = email
-            elif phone:
-                contact = phone
-            else:
-                contact = ''
+            contact = email
             if not name or not contact or not pw:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'All fields are required.'))
                 return
             if len(pw) < 6:
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Password must be at least 6 characters.'))
                 return
-            # Validate format
-            if phone and not is_phone(phone):
-                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Phone must be in 555-867-5309 format (10 digits with dashes).'))
-                return
-            if email and not is_email(email):
+            if not is_email(contact):
                 self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Please enter a valid email address.'))
                 return
-            # Try to send verification email; if it works use code flow, otherwise create account directly
             token, code = create_pending(name, contact, pw)
-            if is_phone(contact):
-                self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=code))
+            sent = send_email_code(contact, code, name)
+            if sent:
+                self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=None))
             else:
-                sent = send_email_code(contact, code, name)
-                if sent is True:
-                    # Email sent — ask them to enter code
-                    self._send(200, 'text/html; charset=utf-8', verify_page(token, contact, show_code=None))
-                else:
-                    # Email not configured or failed — create account directly, no verification needed
-                    result = create_user(contact, name, None, pw_hash=_pending.pop(token, {}).get('pw') or _hash(pw))
-                    if not result:
-                        self._send(200, 'text/html; charset=utf-8', auth_page('login', 'Account already exists. Please sign in.'))
-                        return
-                    uid2, uname2 = result
-                    sess = new_session(uid2, uname2)
-                    self.send_response(302)
-                    self.send_header('Location', '/')
-                    self.send_header('Set-Cookie', self._cookie_header(sess))
-                    self.end_headers()
+                self._send(200, 'text/html; charset=utf-8', auth_page('signup', 'Failed to send verification email. Please try again.'))
 
         elif path == '/verify':
             token = params.get('token','').strip()
