@@ -389,10 +389,10 @@ def auth_page(mode='login', error=''):
         <label>Your name</label>
         <input type="text" name="name" placeholder="John Smith" required autocomplete="name"/>
       </div>'''
-    contact_field = '''
+    contact_field = f'''
       <div class="field">
         <label>Email</label>
-        <input type="email" name="email" placeholder="you@example.com" required autocomplete="email"/>
+        <input type="email" name="{'contact' if is_login else 'email'}" placeholder="you@example.com" required autocomplete="email"/>
       </div>'''
     err_html = f'<div class="err">{htmllib.escape(error)}</div>' if error else ''
     extra_css = ''
