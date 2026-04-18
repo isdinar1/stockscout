@@ -1998,9 +1998,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
 
+def _picks_signature(short, long_):
+    """Create a fingerprint from the set of tickers so we can detect changes."""
+    tickers = sorted(p['symbol'] for p in short) + sorted(p['symbol'] for p in long_)
+    return ','.join(tickers)
+
+_last_alert_signature = None
+
 def _scheduler():
-    """Background thread: run a scan every 30 minutes and email subscribers."""
-    INTERVAL = 30 * 60  # 30 minutes in seconds
+    """Background thread: run a scan every 30 minutes and email subscribers only if picks changed."""
+    global _last_alert_signature
+    INTERVAL = 30 * 60
     print('⏰  Alert scheduler started — scanning every 30 minutes')
     while True:
         try:
@@ -2009,8 +2017,13 @@ def _scheduler():
             themes = run_research()
             short  = next((t['stocks'] for t in themes if t['themeId'] == 'short_hold'), [])
             long_  = next((t['stocks'] for t in themes if t['themeId'] == 'long_hold'),  [])
-            send_alerts_to_all(short, long_)
-            print('⏰  Scheduled scan complete — alerts sent')
+            sig = _picks_signature(short, long_)
+            if sig == _last_alert_signature:
+                print('⏰  Picks unchanged — skipping alert')
+            else:
+                _last_alert_signature = sig
+                send_alerts_to_all(short, long_)
+                print('⏰  New picks detected — alerts sent')
         except Exception as e:
             print(f'⏰  Scheduler error: {e}')
 
