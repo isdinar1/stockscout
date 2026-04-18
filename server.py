@@ -63,7 +63,6 @@ SESSION_SECRET = _load_secret()
 
 def init_db():
     conn, pg = _get_conn()
-    ph = _ph(pg)
     try:
         if pg:
             conn.cursor().execute('''CREATE TABLE IF NOT EXISTS users (
@@ -72,6 +71,9 @@ def init_db():
                 name  TEXT NOT NULL,
                 pw    TEXT NOT NULL
             )''')
+            conn.cursor().execute('''CREATE TABLE IF NOT EXISTS kv (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )''')
         else:
             conn.execute('''CREATE TABLE IF NOT EXISTS users (
                 id    INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,6 +81,35 @@ def init_db():
                 name  TEXT NOT NULL,
                 pw    TEXT NOT NULL
             )''')
+            conn.execute('''CREATE TABLE IF NOT EXISTS kv (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL
+            )''')
+        conn.commit()
+    finally:
+        conn.close()
+
+def kv_get(key):
+    conn, pg = _get_conn()
+    ph = _ph(pg)
+    try:
+        if pg:
+            row = conn.cursor().execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
+        else:
+            row = conn.execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+def kv_set(key, value):
+    conn, pg = _get_conn()
+    ph = _ph(pg)
+    try:
+        if pg:
+            conn.cursor().execute(
+                f'INSERT INTO kv(key,value) VALUES({ph},{ph}) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',
+                (key, value))
+        else:
+            conn.execute('INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)', (key, value))
         conn.commit()
     finally:
         conn.close()
@@ -1915,11 +1946,8 @@ def _picks_signature(short, long_):
     tickers = sorted(p['symbol'] for p in short) + sorted(p['symbol'] for p in long_)
     return ','.join(tickers)
 
-_last_alert_signature = None
-
 def _scheduler():
     """Background thread: run a scan every 30 minutes and email subscribers only if picks changed."""
-    global _last_alert_signature
     INTERVAL = 30 * 60
     print('⏰  Alert scheduler started — scanning every 30 minutes')
     while True:
@@ -1930,10 +1958,11 @@ def _scheduler():
             short  = next((t['stocks'] for t in themes if t['themeId'] == 'short_hold'), [])
             long_  = next((t['stocks'] for t in themes if t['themeId'] == 'long_hold'),  [])
             sig = _picks_signature(short, long_)
-            if sig == _last_alert_signature:
+            last_sig = kv_get('last_alert_signature')
+            if sig == last_sig:
                 print('⏰  Picks unchanged — skipping alert')
             else:
-                _last_alert_signature = sig
+                kv_set('last_alert_signature', sig)
                 send_alerts_to_all(short, long_)
                 print('⏰  New picks detected — alerts sent')
         except Exception as e:
