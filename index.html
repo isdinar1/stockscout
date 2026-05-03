@@ -44,7 +44,8 @@
     .btn:hover:not(:disabled) { transform:translateY(-2px); box-shadow:0 8px 30px rgba(220,38,38,.45); }
     .btn:disabled { background:#e5e7eb; box-shadow:none; cursor:not-allowed; color:#374151; }
 
-    .wrap { max-width:880px; margin:40px auto 80px; padding:0 20px; }
+    .wrap { max-width:880px; margin:40px auto 0; padding:0 20px; }
+    .wrap:empty { margin:0; }
 
     /* Loader */
     .loader { max-width:620px; margin:50px auto; padding:0 20px; }
@@ -173,7 +174,9 @@
   <span class="badge">News-Driven</span>
 </header>
 
-<div class="hero">
+<div class="wrap" id="wrap"></div>
+
+<div class="hero" id="hero">
   <h2>What's happening in the world,<br><em>and what stocks it moves</em></h2>
   <p>
     Reads today's financial news, figures out which sectors are affected — a ceasefire,
@@ -195,8 +198,6 @@
     📰 <strong>News-first, Congress-confirmed</strong> — we scan financial news and trending stocks first, then cross-reference with House STOCK Act disclosures. A 🏛️ badge means Congress is buying it too.
   </div>
 </div>
-
-<div class="wrap" id="wrap"></div>
 
 <script>
 // ── Radar background animation ────────────────────────────────────────────────
@@ -444,7 +445,7 @@ async function scan() {
     if (data.error) throw new Error(data.error);
     // Show any remaining messages then render
     await pollProgress();
-    setTimeout(() => render(data), 400);
+    setTimeout(() => { render(data); window.scrollTo({top: 0, behavior: 'smooth'}); }, 400);
   } catch (e) {
     clearInterval(progressTimer);
     document.getElementById('wrap').innerHTML = `
@@ -583,8 +584,13 @@ document.addEventListener('keydown', e => {
 });
 
 function render(themes) {
+  // Hide hero, show results at top
+  const hero = document.getElementById('hero');
+  const wrap = document.getElementById('wrap');
+  if (hero) hero.style.display = 'none';
+
   if (!themes || !themes.length) {
-    document.getElementById('wrap').innerHTML =
+    wrap.innerHTML =
       '<p style="text-align:center;color:var(--muted);padding:60px 0">No strong themes detected — try again shortly.</p>';
     return;
   }
@@ -684,6 +690,13 @@ function render(themes) {
     Small/micro-cap stocks are highly volatile. Always do your own research before trading.
   </p>`;
 
+  // Prepend a back button
+  html = `<div style="max-width:880px;margin:20px auto 0;padding:0 20px">
+    <button onclick="document.getElementById('hero').style.display='';document.getElementById('wrap').innerHTML='';window.scrollTo({top:0,behavior:'smooth'})"
+      style="background:none;border:1px solid var(--border);border-radius:8px;padding:7px 16px;cursor:pointer;font-size:.82rem;color:var(--muted);font-weight:600">
+      ← New Search
+    </button>
+  </div>` + html;
   document.getElementById('wrap').innerHTML = html;
 
   requestAnimationFrame(() => {
