@@ -2045,6 +2045,56 @@ class Handler(BaseHTTPRequestHandler):
 
                 hold_type = 'short' if (rsi>=52 and chg5>=0 and news_score>=5) else 'long'
 
+                # Generate our own written insights (not raw headlines)
+                insights = []
+                # Price action insight
+                direction = 'up' if chg5 >= 0 else 'down'
+                if abs(chg5) >= 5:
+                    insights.append(f'{name} has moved {direction} {abs(chg5):.1f}% over the past 5 days — a significant move worth watching closely.')
+                elif abs(chg5) >= 2:
+                    momentum = 'building momentum' if chg5>0 else 'selling pressure'
+                    insights.append(f'{name} is trending {direction} {abs(chg5):.1f}% this week, showing {momentum}.')
+                else:
+                    insights.append(f'{name} is relatively flat this week ({chg5:+.1f}%), consolidating near ${price:.2f}.')
+                # RSI insight
+                if rsi >= 70:
+                    insights.append(f'RSI at {rsi} signals the stock is overbought — a pullback or consolidation may be near.')
+                elif rsi >= 55:
+                    insights.append(f'RSI at {rsi} shows healthy upward momentum without being overbought yet.')
+                elif rsi <= 30:
+                    insights.append(f'RSI at {rsi} is deeply oversold — could signal a potential bounce if sentiment shifts.')
+                elif rsi <= 45:
+                    insights.append(f'RSI at {rsi} suggests the stock is under pressure with more sellers than buyers recently.')
+                # 52-week position
+                w52_pct = round(((price - lo52) / (hi52 - lo52) * 100) if hi52 != lo52 else 50)
+                if w52_pct >= 85:
+                    insights.append(f'Trading near its 52-week high (${hi52:.2f}) — institutional confidence is high but upside may be limited short term.')
+                elif w52_pct <= 20:
+                    insights.append(f'Trading near its 52-week low (${lo52:.2f}) — either a deep value opportunity or a stock with ongoing problems.')
+                else:
+                    insights.append(f'Sitting at {w52_pct}% of its 52-week range (${lo52:.2f}–${hi52:.2f}), with room to move in either direction.')
+                # Theme-based insight
+                if matching_themes:
+                    theme_str = ' and '.join(matching_themes[:2])
+                    insights.append(f'Current macro themes driving this stock: {theme_str}. These events directly affect {name}\'s sector.')
+                # Congress insight
+                if congress_confirmed:
+                    n_buyers = len(buys)
+                    insights.append(f'{n_buyers} member{"s" if n_buyers>1 else ""} of Congress {"have" if n_buyers>1 else "has"} recently purchased {sym} — a strong signal of insider confidence at the government level.')
+                elif sym_trades:
+                    sells = [tr for tr in sym_trades if tr.get('type') == 'Sell']
+                    if sells:
+                        insights.append(f'Congress members have been selling {sym} recently — worth monitoring as a potential bearish signal.')
+                else:
+                    insights.append(f'No recent Congressional trading activity detected for {sym}.')
+                # News score insight
+                if news_score >= 10:
+                    insights.append(f'News sentiment is strongly positive — multiple recent stories are bullish for {name}.')
+                elif news_score >= 5:
+                    insights.append(f'News sentiment is mildly positive for {name} based on recent coverage.')
+                elif news_score <= -10:
+                    insights.append(f'News sentiment is negative — recent headlines are creating headwinds for {name}.')
+
                 self._send(200, 'application/json', json.dumps({
                     'symbol':   sym,
                     'name':     name,
@@ -2059,7 +2109,7 @@ class Handler(BaseHTTPRequestHandler):
                     'capLabel': cap_label(mc),
                     'congressConfirmed': congress_confirmed,
                     'congressMembers':   congress_members,
-                    'news':     supporting[:5] if supporting else news_headlines[:5],
+                    'insights': insights,
                     'themes':   matching_themes[:3],
                     'closes':   closes[-30:],
                 }))

@@ -377,10 +377,10 @@ async function searchStock() {
         </div>` : '';
     const themesHtml = s.themes?.length
       ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${s.themes.map(th=>`<span style="background:#f0fdf4;color:#166534;padding:3px 9px;border-radius:6px;font-size:.75rem;font-weight:600">📰 ${th}</span>`).join('')}</div>` : '';
-    const newsHtml = s.news?.length
+    const newsHtml = s.insights?.length
       ? `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-          <div style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Related News Events</div>
-          ${s.news.map(h=>`<div style="font-size:.82rem;color:var(--text);padding:5px 0;border-bottom:1px solid #f3f4f6;line-height:1.4">• ${h}</div>`).join('')}
+          <div style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px">📊 StockScout Analysis</div>
+          ${s.insights.map(h=>`<div style="font-size:.84rem;color:var(--text);padding:7px 0;border-bottom:1px solid #f3f4f6;line-height:1.5">${h}</div>`).join('')}
         </div>` : '';
 
     // Mini sparkline
