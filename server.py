@@ -1781,6 +1781,25 @@ class Handler(BaseHTTPRequestHandler):
             )
             self._send(200, 'text/html; charset=utf-8', html)
 
+        elif path == '/debug-yf':
+            # Test yfinance on Railway
+            lines = []
+            try:
+                t = yf.Ticker('AAPL')
+                lines.append('✅ yf.Ticker created')
+                hist = t.history(period='5d', progress=False)
+                closes = hist['Close'].dropna().tolist() if 'Close' in hist else []
+                lines.append(f'✅ history() returned {len(closes)} closes: {closes[-1] if closes else "none"}')
+                try:
+                    fi = t.fast_info
+                    lines.append(f'✅ fast_info ok: {getattr(fi,"company_name","?")}')
+                except Exception as e2:
+                    lines.append(f'❌ fast_info failed: {e2}')
+            except Exception as e:
+                lines.append(f'❌ Error: {e}')
+            self._send(200, 'text/html; charset=utf-8',
+                '<br>'.join(lines) + '<br><a href="/">back</a>')
+
         elif path == '/debug-smtp':
             import json as _json, urllib.request as _req
             brevo_key  = os.environ.get('BREVO_API_KEY', '')
