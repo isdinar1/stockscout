@@ -336,7 +336,7 @@ def send_alerts_to_all(short_picks, long_picks):
         print('  [alert] No subscribers to notify')
         return
     sent, failed = 0, 0
-    with ThreadPoolExecutor(max_workers=5) as ex:
+    with ThreadPoolExecutor(max_workers=2) as ex:
         futures = {ex.submit(send_alert_email, email, name, short_picks, long_picks): email
                    for email, name in subscribers}
         for f in as_completed(futures):
@@ -942,6 +942,8 @@ def get_congress_trades(max_ptrs=15):
             zdata = r.read()
         zf   = zipfile.ZipFile(io.BytesIO(zdata))
         root = ET.fromstring(zf.read('2026FD.xml'))
+        zf.close()
+        del zdata
     except Exception as e:
         _log(f'⚠️  Could not reach House disclosure system: {e}')
         _congress_cache = {}
@@ -975,7 +977,7 @@ def get_congress_trades(max_ptrs=15):
             return []
 
     ticker_trades = {}
-    with ThreadPoolExecutor(max_workers=8) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:
         for trades in ex.map(fetch_ptr, enumerate(ptrs)):
             for trade in trades:
                 tk = trade['ticker']
@@ -1067,7 +1069,7 @@ def get_news():
     ]
     urls = [f'https://news.google.com/rss/search?q={urllib.parse.quote(q)}&hl=en-US&gl=US&ceid=US:en'
             for q in google_queries]
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         for text in ex.map(fetch_text, urls):
             parse_rss(text)
 
@@ -1108,7 +1110,7 @@ def batch_fetch(symbols):
     results = {}
     try:
         tickers = yf.Tickers(' '.join(symbols))
-        hist = tickers.history(period='1y', auto_adjust=True, progress=False)
+        hist = tickers.history(period='3mo', auto_adjust=True, progress=False)
         # hist is a MultiIndex DataFrame: (field, symbol)
         closes_all  = hist.get('Close',  None)
         volumes_all = hist.get('Volume', None)
@@ -1500,10 +1502,26 @@ def run_research():
     confirmed_overlap = [s for s in candidates if s in congress_buyers]
     _log(f'✅  Congress buying {len(congress_buyers)} stocks — {len(confirmed_overlap)} overlap with news themes: {", ".join(confirmed_overlap[:5])}{"…" if len(confirmed_overlap)>5 else ""}')
 
+    # Add any user-requested tickers
+    requested = [t for t in (kv_get('requested_tickers') or '').split(',') if t]
+    for sym in requested:
+        if sym not in seen_sym:
+            seen_sym.add(sym)
+            candidates.append(sym)
+
+    # Cap candidates to avoid OOM on Railway's free tier
+    candidates = candidates[:30]
+
+    # Free congress data from memory — we only need congress_buyers from here on
+    congress_data = None
+
     # ── Step 5: Live price data ───────────────────────────────────────────────
     _log(f'📈  Fetching price data for {len(candidates)} stocks...')
     chart_cache = batch_fetch(candidates) if candidates else {}
     _log(f'✅  Got price history for {len(chart_cache)} stocks')
+
+    # Free raw headlines from memory
+    headlines = None
 
     # ── Step 6: Company names + market caps (reuse chart_cache data) ─────────
     enriched = enrich_top(candidates, chart_cache)
@@ -1518,7 +1536,7 @@ def run_research():
         return sym, headlines
 
     news_cache = {}
-    with ThreadPoolExecutor(max_workers=10) as ex:
+    with ThreadPoolExecutor(max_workers=4) as ex:
         for sym, headlines in ex.map(fetch_stock_news_for, valid):
             news_cache[sym] = headlines
 
@@ -1872,9 +1890,33 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         length = int(self.headers.get('Content-Length', 0))
-        body   = self.rfile.read(length).decode()
-        params = dict(urllib.parse.parse_qsl(body))
+        raw    = self.rfile.read(length) if length else b''
         path   = self.path.split('?')[0]
+
+        # JSON endpoints
+        if path == '/request-stock':
+            uid, _ = self._authed()
+            if not uid:
+                self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
+                return
+            try:
+                data    = json.loads(raw)
+                tickers = [t.strip().upper() for t in data.get('tickers', []) if t.strip()]
+                tickers = [t for t in tickers if re.match(r'^[A-Z]{1,6}$', t)][:10]
+                if not tickers:
+                    self._send(400, 'application/json', json.dumps({'error': 'No valid tickers'}))
+                    return
+                existing    = kv_get('requested_tickers') or ''
+                all_tickers = list(dict.fromkeys((existing + ',' + ','.join(tickers)).strip(',').split(',')))
+                kv_set('requested_tickers', ','.join(all_tickers[:50]))
+                self._send(200, 'application/json', json.dumps({'ok': True}))
+            except Exception as e:
+                self._send(500, 'application/json', json.dumps({'error': str(e)}))
+            return
+
+        # Form-encoded endpoints
+        body   = raw.decode()
+        params = dict(urllib.parse.parse_qsl(body))
 
         if path == '/signup':
             name  = params.get('name','').strip()
