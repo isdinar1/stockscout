@@ -1530,16 +1530,10 @@ def run_research():
     # Cap candidates to avoid OOM on Railway's free tier
     candidates = candidates[:30]
 
-    # Free congress data from memory — we only need congress_buyers from here on
-    congress_data = None
-
     # ── Step 5: Live price data ───────────────────────────────────────────────
     _log(f'📈  Fetching price data for {len(candidates)} stocks...')
     chart_cache = batch_fetch(candidates) if candidates else {}
     _log(f'✅  Got price history for {len(chart_cache)} stocks')
-
-    # Free raw headlines from memory
-    headlines = None
 
     # ── Step 6: Company names + market caps (reuse chart_cache data) ─────────
     enriched = enrich_top(candidates, chart_cache)
@@ -2008,10 +2002,15 @@ class Handler(BaseHTTPRequestHandler):
                 news_score, supporting = news_sentiment(news_headlines)
                 score = min(100, score + news_score)
 
-                # Detect themes from news
-                all_news = get_news()
-                active   = detect_themes(all_news)
-                matching_themes = [th['title'] for th in active if sym in [s for sec in th.get('sectors_up',[]) for s in SECTORS.get(sec,[])] or sym in [s for sec in th.get('sectors_down',[]) for s in SECTORS.get(sec,[])]]
+                # Detect themes from stock-specific news (no need to re-fetch all news)
+                matching_themes = []
+                if news_headlines:
+                    corpus = ' '.join(news_headlines).lower()
+                    for th in THEMES:
+                        if any(kw in corpus for kw in th.get('detect', [])):
+                            matching_themes.append(th['title'])
+                            if len(matching_themes) >= 3:
+                                break
 
                 hold_type = 'short' if (rsi>=52 and chg5>=0 and news_score>=5) else 'long'
 
