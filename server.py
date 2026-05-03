@@ -1915,23 +1915,32 @@ class Handler(BaseHTTPRequestHandler):
                 import re as _re, json as _json
 
                 def resolve_ticker(q):
-                    """Try Yahoo Finance search API to resolve any company name to a ticker."""
+                    """Use Yahoo Finance search API to find the best matching ticker for a company name."""
                     try:
-                        url = f'https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(q)}&quotesCount=5&newsCount=0&enableFuzzyQuery=true'
-                        req = urllib.request.Request(url, headers={
-                            'User-Agent': UA,
-                            'Accept': 'application/json',
-                        })
+                        url = f'https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(q)}&quotesCount=10&newsCount=0&enableFuzzyQuery=true'
+                        req = urllib.request.Request(url, headers={'User-Agent': UA, 'Accept': 'application/json'})
                         with urllib.request.urlopen(req, timeout=8) as r:
                             data = _json.loads(r.read())
-                        quotes = data.get('quotes', [])
-                        # Prefer US equity results
-                        for q2 in quotes:
-                            if q2.get('quoteType') == 'EQUITY' and q2.get('exchDisp','') in ('NYSE','NASDAQ','NMS','NYQ','NGM','NCM'):
-                                return q2.get('symbol','')
-                        # Fallback to first result
-                        if quotes:
-                            return quotes[0].get('symbol','')
+                        quotes = [x for x in data.get('quotes', []) if x.get('quoteType') == 'EQUITY']
+                        us_exchanges = {'NYSE','NASDAQ','NMS','NYQ','NGM','NCM','NasdaqGS','NasdaqGM','NasdaqCM'}
+                        us_quotes = [x for x in quotes if x.get('exchDisp','') in us_exchanges or x.get('exchange','') in us_exchanges]
+                        pool = us_quotes if us_quotes else quotes
+                        if not pool:
+                            return None
+                        q_words = set(q.lower().split())
+                        def score(x):
+                            name = (x.get('longname') or x.get('shortname') or '').lower()
+                            name_words = set(name.split())
+                            # How many query words appear in the company name
+                            word_overlap = len(q_words & name_words)
+                            # Bonus if query is a prefix of the name
+                            prefix_bonus = 2 if name.startswith(q.lower()) else 0
+                            # Penalty for subsidiary words like "mortgage", "trust", "capital", "fund", "etf"
+                            sub_words = {'mortgage','trust','capital','fund','etf','reit','preferred','series','holdings','inc'}
+                            sub_penalty = sum(1 for w in sub_words if w in name_words and w not in q_words)
+                            return word_overlap + prefix_bonus - sub_penalty
+                        best = max(pool, key=score)
+                        return best.get('symbol','')
                     except Exception as e:
                         print(f'  [resolve] {e}')
                     return None
