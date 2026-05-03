@@ -1912,45 +1912,47 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, 'application/json', json.dumps({'error': 'No query provided'}))
                 return
             try:
-                import re as _re
-                # Company name → ticker lookup table
-                NAME_MAP = {
-                    'apple':'AAPL','tesla':'TSLA','nvidia':'NVDA','microsoft':'MSFT',
-                    'google':'GOOGL','alphabet':'GOOGL','amazon':'AMZN','meta':'META',
-                    'facebook':'META','netflix':'NFLX','disney':'DIS','boeing':'BA',
-                    'ford':'F','gm':'GM','general motors':'GM','walmart':'WMT',
-                    'target':'TGT','costco':'COST','nike':'NKE','starbucks':'SBUX',
-                    'mcdonalds':'MCD','coca cola':'KO','pepsi':'PEP','johnson':'JNJ',
-                    'pfizer':'PFE','moderna':'MRNA','uber':'UBER','lyft':'LYFT',
-                    'airbnb':'ABNB','paypal':'PYPL','visa':'V','mastercard':'MA',
-                    'jpmorgan':'JPM','bank of america':'BAC','goldman':'GS',
-                    'morgan stanley':'MS','wells fargo':'WFC','exxon':'XOM',
-                    'chevron':'CVX','shell':'SHEL','bp':'BP','intel':'INTC',
-                    'amd':'AMD','qualcomm':'QCOM','broadcom':'AVGO','salesforce':'CRM',
-                    'oracle':'ORCL','ibm':'IBM','cisco':'CSCO','twitter':'X',
-                    'snapchat':'SNAP','snap':'SNAP','pinterest':'PINS','reddit':'RDDT',
-                    'coinbase':'COIN','robinhood':'HOOD','palantir':'PLTR',
-                    'spacex':'RKLB','rocket lab':'RKLB','lockheed':'LMT',
-                    'raytheon':'RTX','northrop':'NOC','general dynamics':'GD',
-                    'eli lilly':'LLY','lilly':'LLY','novo nordisk':'NVO',
-                    'abbvie':'ABBV','merck':'MRK','astrazeneca':'AZN','gilead':'GILD',
-                    'biogen':'BIIB','regeneron':'REGN','shopify':'SHOP',
-                    'amd advanced':'AMD','advanced micro':'AMD','occidental':'OXY',
-                    'exxon mobil':'XOM','taiwan semiconductor':'TSM','tsmc':'TSM',
-                    'arm':'ARM','arm holdings':'ARM','openai':'MSFT',
-                }
-                q_lower = query.lower().strip()
-                sym = NAME_MAP.get(q_lower, query.upper().strip())
-                info = {}
+                import re as _re, json as _json
 
-                # Use history() as primary — it's reliable on Railway
+                def resolve_ticker(q):
+                    """Try Yahoo Finance search API to resolve any company name to a ticker."""
+                    try:
+                        url = f'https://query1.finance.yahoo.com/v1/finance/search?q={urllib.parse.quote(q)}&quotesCount=5&newsCount=0&enableFuzzyQuery=true'
+                        req = urllib.request.Request(url, headers={
+                            'User-Agent': UA,
+                            'Accept': 'application/json',
+                        })
+                        with urllib.request.urlopen(req, timeout=8) as r:
+                            data = _json.loads(r.read())
+                        quotes = data.get('quotes', [])
+                        # Prefer US equity results
+                        for q2 in quotes:
+                            if q2.get('quoteType') == 'EQUITY' and q2.get('exchDisp','') in ('NYSE','NASDAQ','NMS','NYQ','NGM','NCM'):
+                                return q2.get('symbol','')
+                        # Fallback to first result
+                        if quotes:
+                            return quotes[0].get('symbol','')
+                    except Exception as e:
+                        print(f'  [resolve] {e}')
+                    return None
+
+                q_lower = query.lower().strip()
+                # If it looks like a ticker already, use it directly
+                if _re.match(r'^[A-Z]{1,6}$', query.upper().strip()):
+                    sym = query.upper().strip()
+                else:
+                    # Use Yahoo search API to find the ticker
+                    resolved = resolve_ticker(query)
+                    sym = resolved if resolved else query.upper().strip()
+
+                # Fetch price history
                 t    = yf.Ticker(sym)
                 hist = t.history(period='3mo', auto_adjust=True)
                 closes  = hist['Close'].dropna().tolist()  if 'Close'  in hist else []
                 volumes = hist['Volume'].dropna().tolist() if 'Volume' in hist else []
 
                 if len(closes) < 5:
-                    self._send(404, 'application/json', json.dumps({'error': f'Could not find "{query}" — try a ticker like AAPL'}))
+                    self._send(404, 'application/json', json.dumps({'error': f'Could not find "{query}" — try a ticker symbol like AAPL'}))
                     return
 
                 # Get name + market cap from fast_info (lightweight, no cookies needed)
