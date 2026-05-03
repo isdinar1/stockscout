@@ -1900,15 +1900,41 @@ class Handler(BaseHTTPRequestHandler):
                 return
             try:
                 import re as _re
-                sym  = query.upper().strip()
+                # Company name → ticker lookup table
+                NAME_MAP = {
+                    'apple':'AAPL','tesla':'TSLA','nvidia':'NVDA','microsoft':'MSFT',
+                    'google':'GOOGL','alphabet':'GOOGL','amazon':'AMZN','meta':'META',
+                    'facebook':'META','netflix':'NFLX','disney':'DIS','boeing':'BA',
+                    'ford':'F','gm':'GM','general motors':'GM','walmart':'WMT',
+                    'target':'TGT','costco':'COST','nike':'NKE','starbucks':'SBUX',
+                    'mcdonalds':'MCD','coca cola':'KO','pepsi':'PEP','johnson':'JNJ',
+                    'pfizer':'PFE','moderna':'MRNA','uber':'UBER','lyft':'LYFT',
+                    'airbnb':'ABNB','paypal':'PYPL','visa':'V','mastercard':'MA',
+                    'jpmorgan':'JPM','bank of america':'BAC','goldman':'GS',
+                    'morgan stanley':'MS','wells fargo':'WFC','exxon':'XOM',
+                    'chevron':'CVX','shell':'SHEL','bp':'BP','intel':'INTC',
+                    'amd':'AMD','qualcomm':'QCOM','broadcom':'AVGO','salesforce':'CRM',
+                    'oracle':'ORCL','ibm':'IBM','cisco':'CSCO','twitter':'X',
+                    'snapchat':'SNAP','snap':'SNAP','pinterest':'PINS','reddit':'RDDT',
+                    'coinbase':'COIN','robinhood':'HOOD','palantir':'PLTR',
+                    'spacex':'RKLB','rocket lab':'RKLB','lockheed':'LMT',
+                    'raytheon':'RTX','northrop':'NOC','general dynamics':'GD',
+                    'eli lilly':'LLY','lilly':'LLY','novo nordisk':'NVO',
+                    'abbvie':'ABBV','merck':'MRK','astrazeneca':'AZN','gilead':'GILD',
+                    'biogen':'BIIB','regeneron':'REGN','shopify':'SHOP',
+                    'amd advanced':'AMD','advanced micro':'AMD','occidental':'OXY',
+                    'exxon mobil':'XOM','taiwan semiconductor':'TSM','tsmc':'TSM',
+                    'arm':'ARM','arm holdings':'ARM','openai':'MSFT',
+                }
+                q_lower = query.lower().strip()
+                sym = NAME_MAP.get(q_lower, query.upper().strip())
                 info = {}
 
-                # If it looks like a ticker (1-6 capital letters), try direct lookup first
-                if _re.match(r'^[A-Z]{1,6}$', sym):
-                    t    = yf.Ticker(sym)
-                    info = t.info or {}
+                # Try direct ticker lookup
+                t    = yf.Ticker(sym)
+                info = t.info or {}
 
-                # If no valid price data, search by name
+                # If no price data, try yf.Search as fallback
                 if not (info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')):
                     try:
                         hits = yf.Search(query, max_results=1).quotes
