@@ -350,45 +350,77 @@ async function pollProgress() {
 
 async function searchStock() {
   const input  = document.getElementById('stock-search');
-  const result = document.getElementById('search-result');
+  const box    = document.getElementById('search-result');
   const query  = input.value.trim();
   if (!query) return;
-  result.innerHTML = `<div style="color:var(--muted);font-size:.85rem;padding:10px 0">⏳ Searching for <b>${query}</b>...</div>`;
+  box.innerHTML = `<div style="color:var(--muted);font-size:.85rem;padding:12px 0;text-align:center">⏳ Analysing <b>${query}</b>...</div>`;
   try {
     const res  = await fetch(`${API}/search-stock?q=${encodeURIComponent(query)}`);
-    const data = await res.json();
-    if (data.error) { result.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ ${data.error}</div>`; return; }
-    const s = data;
-    const chg = s.chg5 >= 0
-      ? `<span style="color:var(--green)">▲ ${s.chg5.toFixed(2)}% (5d)</span>`
-      : `<span style="color:var(--red)">▼ ${Math.abs(s.chg5).toFixed(2)}% (5d)</span>`;
-    const congress = s.congressConfirmed
-      ? `<span style="background:#ede9fe;color:#6d28d9;padding:3px 8px;border-radius:6px;font-size:.72rem;font-weight:700">🏛️ Congress buying</span>` : '';
-    result.innerHTML = `
-      <div style="background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-top:4px">
+    const s    = await res.json();
+    if (s.error) { box.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ ${s.error}</div>`; return; }
+
+    const up    = s.chg5 >= 0;
+    const chgColor = up ? 'var(--green)' : 'var(--red)';
+    const chgArrow = up ? '▲' : '▼';
+    const scoreColor = s.score>=70 ? 'var(--green)' : s.score>=50 ? 'var(--yellow)' : 'var(--red)';
+    const signalBg   = s.score>=70 ? '#dcfce7' : s.score>=50 ? '#fef9c3' : '#fee2e2';
+    const signalCol  = s.score>=70 ? '#166534' : s.score>=50 ? '#854d0e' : '#991b1b';
+    const holdBadge  = s.holdType==='short'
+      ? `<span style="background:#fff7ed;color:#c2410c;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:700">⚡ Short Hold</span>`
+      : `<span style="background:#eff6ff;color:#1d4ed8;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:700">🏦 Long Hold</span>`;
+    const congressBadge = s.congressConfirmed
+      ? `<span style="background:#ede9fe;color:#6d28d9;padding:3px 9px;border-radius:6px;font-size:.72rem;font-weight:700">🏛️ Congress Buying</span>` : '';
+    const membersHtml = s.congressMembers?.length
+      ? `<div style="font-size:.78rem;color:#6d28d9;margin-top:4px">👤 ${s.congressMembers.join(', ')}</div>` : '';
+    const themesHtml = s.themes?.length
+      ? `<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px">${s.themes.map(th=>`<span style="background:#f0fdf4;color:#166534;padding:3px 9px;border-radius:6px;font-size:.75rem;font-weight:600">📰 ${th}</span>`).join('')}</div>` : '';
+    const newsHtml = s.news?.length
+      ? `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:.72rem;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px">Related News Events</div>
+          ${s.news.map(h=>`<div style="font-size:.82rem;color:var(--text);padding:5px 0;border-bottom:1px solid #f3f4f6;line-height:1.4">• ${h}</div>`).join('')}
+        </div>` : '';
+
+    // Mini sparkline
+    const mini = s.closes?.length > 1 ? (() => {
+      const mn = Math.min(...s.closes), mx = Math.max(...s.closes), rng = mx-mn||1;
+      const pts = s.closes.map((v,i)=>`${(i/(s.closes.length-1)*200).toFixed(1)},${(30-(v-mn)/rng*28).toFixed(1)}`).join(' ');
+      const col = s.closes[s.closes.length-1] >= s.closes[0] ? '#059669' : '#dc2626';
+      return `<svg viewBox="0 0 200 32" style="width:100%;height:40px;margin:12px 0" preserveAspectRatio="none">
+        <polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linejoin="round"/>
+      </svg>`;
+    })() : '';
+
+    box.innerHTML = `
+      <div style="background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-top:6px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
           <div>
-            <div style="font-size:1.4rem;font-weight:900;color:var(--text)">$${s.symbol}</div>
-            <div style="color:var(--muted);font-size:.85rem;margin-top:2px">${s.name}</div>
+            <div style="font-size:1.5rem;font-weight:900;color:var(--text)">$${s.symbol}</div>
+            <div style="color:var(--muted);font-size:.83rem;margin-top:2px">${s.name}</div>
           </div>
           <div style="text-align:right">
-            <div style="font-size:1.3rem;font-weight:800;color:var(--text)">$${s.price}</div>
-            <div style="font-size:.85rem;margin-top:2px">${chg}</div>
+            <div style="font-size:1.4rem;font-weight:800;color:var(--text)">$${s.price}</div>
+            <div style="font-size:.88rem;font-weight:600;color:${chgColor}">${chgArrow} ${Math.abs(s.chg5).toFixed(2)}% (5d)</div>
           </div>
         </div>
-        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px">
-          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">${s.capLabel}</span>
-          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">52w: $${s.lo52?.toFixed(2)} – $${s.hi52?.toFixed(2)}</span>
-          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">RSI ${s.rsi?.toFixed(1)}</span>
-          ${congress}
+        ${mini}
+        <div style="display:flex;align-items:center;justify-content:space-between;margin:4px 0 12px">
+          <div style="font-size:1.1rem;font-weight:800;color:${scoreColor}">${s.score}/100</div>
+          <span style="background:${signalBg};color:${signalCol};padding:4px 12px;border-radius:8px;font-size:.8rem;font-weight:700">${s.signal}</span>
         </div>
-        ${s.news?.length ? `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
-          <div style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Latest News</div>
-          ${s.news.map(h=>`<div style="font-size:.82rem;color:var(--text);padding:4px 0;border-bottom:1px solid #f3f4f6">${h}</div>`).join('')}
-        </div>` : ''}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px">
+          ${holdBadge}${congressBadge}
+        </div>
+        ${membersHtml}
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:10px">
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.75rem;color:var(--muted)">${s.capLabel}</span>
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.75rem;color:var(--muted)">52w $${s.lo52} – $${s.hi52}</span>
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.75rem;color:var(--muted)">RSI ${s.rsi}</span>
+        </div>
+        ${themesHtml}
+        ${newsHtml}
       </div>`;
   } catch(e) {
-    result.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ Search failed. Try again.</div>`;
+    box.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ Search failed. Try again.</div>`;
   }
 }
 

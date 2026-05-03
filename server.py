@@ -1899,58 +1899,100 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, 'application/json', json.dumps({'error': 'No query provided'}))
                 return
             try:
-                import yfinance as yf
-                # Try as ticker first, then search by name
+                # Resolve symbol
                 sym = query.upper().replace(' ','')
                 t   = yf.Ticker(sym)
                 info = t.info
-                # If no price found, try yfinance search
                 if not info.get('regularMarketPrice') and not info.get('currentPrice'):
-                    results = yf.Search(query, max_results=1)
-                    hits = getattr(results, 'quotes', [])
-                    if hits:
-                        sym  = hits[0].get('symbol', sym)
-                        t    = yf.Ticker(sym)
-                        info = t.info
-                price = info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose') or 0
+                    try:
+                        hits = yf.Search(query, max_results=1).quotes
+                        if hits:
+                            sym  = hits[0].get('symbol', sym)
+                            t    = yf.Ticker(sym)
+                            info = t.info
+                    except Exception:
+                        pass
+
                 name  = info.get('longName') or info.get('shortName') or sym
                 mc    = info.get('marketCap', 0) or 0
-                hi52  = info.get('fiftyTwoWeekHigh', 0)
-                lo52  = info.get('fiftyTwoWeekLow', 0)
-                rsi_val = 50.0
-                chg5  = 0.0
-                try:
-                    hist   = t.history(period='10d', auto_adjust=True, progress=False)
-                    closes = hist['Close'].dropna().tolist()
-                    if len(closes) >= 6:
-                        chg5 = (closes[-1] / closes[-6] - 1) * 100
-                    if len(closes) >= 14:
-                        deltas = [closes[i]-closes[i-1] for i in range(1,len(closes))]
-                        gains  = [d for d in deltas if d > 0]
-                        losses = [-d for d in deltas if d < 0]
-                        ag = sum(gains[-14:])/14 if gains else 0
-                        al = sum(losses[-14:])/14 if losses else 0.001
-                        rsi_val = 100 - 100/(1+ag/al)
-                except Exception:
-                    pass
-                # Check congress
-                congress_data = _congress_cache or {}
-                congress_confirmed = sym in congress_data and any(t2['type']=='Buy' for t2 in congress_data[sym])
-                # Fetch news
-                news_headlines = fetch_stock_news(sym, name)[:5]
+
+                # Get 3 months of price history
+                hist   = t.history(period='3mo', auto_adjust=True, progress=False)
+                closes = hist['Close'].dropna().tolist()
+                volumes= hist['Volume'].dropna().tolist() if 'Volume' in hist else []
+                if len(closes) < 5:
+                    self._send(404, 'application/json', json.dumps({'error': f'No price data found for "{query}"'}))
+                    return
+
+                price  = closes[-1]
+                hi52   = max(closes)
+                lo52   = min(closes)
+                chg5   = (closes[-1]/closes[-6]-1)*100 if len(closes)>5 else 0
+                w52    = (price-lo52)/(hi52-lo52) if hi52!=lo52 else 0.5
+                avg_vol= sum(volumes[-20:])/20 if len(volumes)>=20 else 1
+                vol_r  = volumes[-1]/avg_vol if avg_vol and volumes else 1.0
+
+                # RSI
+                deltas = [closes[i]-closes[i-1] for i in range(1,len(closes))]
+                gains  = [d for d in deltas if d>0]
+                losses = [-d for d in deltas if d<0]
+                ag = sum(gains[-14:])/14 if len(gains)>=14 else (sum(gains)/len(gains) if gains else 0)
+                al = sum(losses[-14:])/14 if len(losses)>=14 else (sum(losses)/len(losses) if losses else 0.001)
+                rsi = round(100 - 100/(1+ag/al), 1)
+
+                # Score signal
+                score = 50
+                if rsi >= 55: score += 15
+                elif rsi <= 40: score += 10
+                if chg5 >= 3: score += 15
+                elif chg5 <= -3: score -= 10
+                if w52 >= 0.8: score += 10
+                if vol_r >= 1.5: score += 10
+                score = max(0, min(100, score))
+
+                if score >= 70:   signal = 'Strong Setup'
+                elif score >= 55: signal = 'Worth Watching'
+                elif score >= 40: signal = 'Neutral'
+                else:             signal = 'Bearish Signal'
+
+                # Congress cross-reference
+                congress_trades = _congress_cache or {}
+                congress_confirmed = sym in congress_trades and any(tr['type']=='Buy' for tr in congress_trades[sym])
+                congress_members   = [tr['name'] for tr in congress_trades.get(sym,[]) if tr['type']=='Buy'][:3]
+
+                # Fetch news + detect relevant themes
+                news_headlines = fetch_stock_news(sym, name)
+                news_score, supporting = news_sentiment(news_headlines)
+                score = min(100, score + news_score)
+
+                # Detect themes from news
+                all_news = get_news()
+                active   = detect_themes(all_news)
+                matching_themes = [th['title'] for th in active if sym in [s for sec in th.get('sectors_up',[]) for s in SECTORS.get(sec,[])] or sym in [s for sec in th.get('sectors_down',[]) for s in SECTORS.get(sec,[])]]
+
+                hold_type = 'short' if (rsi>=52 and chg5>=0 and news_score>=5) else 'long'
+
                 self._send(200, 'application/json', json.dumps({
-                    'symbol': sym, 'name': name,
-                    'price': round(price, 2),
-                    'chg5':  round(chg5, 2),
-                    'hi52':  round(hi52, 2),
-                    'lo52':  round(lo52, 2),
-                    'rsi':   round(rsi_val, 1),
+                    'symbol':   sym,
+                    'name':     name,
+                    'price':    round(price,2),
+                    'chg5':     round(chg5,2),
+                    'hi52':     round(hi52,2),
+                    'lo52':     round(lo52,2),
+                    'rsi':      rsi,
+                    'score':    score,
+                    'signal':   signal,
+                    'holdType': hold_type,
                     'capLabel': cap_label(mc),
                     'congressConfirmed': congress_confirmed,
-                    'news': news_headlines,
+                    'congressMembers':   congress_members,
+                    'news':     supporting[:5] if supporting else news_headlines[:5],
+                    'themes':   matching_themes[:3],
+                    'closes':   closes[-30:],
                 }))
             except Exception as e:
-                self._send(500, 'application/json', json.dumps({'error': f'Could not find stock: {query}'}))
+                import traceback; traceback.print_exc()
+                self._send(500, 'application/json', json.dumps({'error': f'Could not find "{query}" — try a ticker symbol like AAPL'}))
 
         elif path == '/scan':
             uid, _ = self._authed()
