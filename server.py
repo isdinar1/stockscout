@@ -1930,35 +1930,42 @@ class Handler(BaseHTTPRequestHandler):
                 sym = NAME_MAP.get(q_lower, query.upper().strip())
                 info = {}
 
-                # Try direct ticker lookup
+                # Use history() as primary — it's reliable on Railway
                 t    = yf.Ticker(sym)
-                info = t.info or {}
+                hist = t.history(period='3mo', auto_adjust=True, progress=False)
+                closes  = hist['Close'].dropna().tolist()  if 'Close'  in hist else []
+                volumes = hist['Volume'].dropna().tolist() if 'Volume' in hist else []
 
-                # If no price data, try yf.Search as fallback
-                if not (info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')):
-                    try:
-                        hits = yf.Search(query, max_results=1).quotes
-                        if hits:
-                            sym  = hits[0].get('symbol', sym)
-                            t    = yf.Ticker(sym)
-                            info = t.info or {}
-                    except Exception as se:
-                        print(f'  [search] yf.Search failed: {se}')
-
-                if not (info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')):
+                if len(closes) < 5:
                     self._send(404, 'application/json', json.dumps({'error': f'Could not find "{query}" — try a ticker like AAPL'}))
                     return
 
-                name  = info.get('longName') or info.get('shortName') or sym
-                mc    = info.get('marketCap', 0) or 0
+                # Get name + market cap from fast_info (lightweight, no cookies needed)
+                try:
+                    fi   = t.fast_info
+                    name = getattr(fi, 'company_name', None) or sym
+                    mc   = getattr(fi, 'market_cap', 0) or 0
+                except Exception:
+                    name = sym
+                    mc   = 0
 
-                # Get 3 months of price history
-                hist   = t.history(period='3mo', auto_adjust=True, progress=False)
-                closes = hist['Close'].dropna().tolist()
-                volumes= hist['Volume'].dropna().tolist() if 'Volume' in hist else []
-                if len(closes) < 5:
-                    self._send(404, 'application/json', json.dumps({'error': f'No price data found for "{query}"'}))
-                    return
+                # Fallback: use the NAME_MAP reversed for known symbols
+                KNOWN_NAMES = {
+                    'AAPL':'Apple Inc','TSLA':'Tesla Inc','NVDA':'NVIDIA Corporation',
+                    'MSFT':'Microsoft Corporation','GOOGL':'Alphabet Inc','AMZN':'Amazon.com Inc',
+                    'META':'Meta Platforms Inc','NFLX':'Netflix Inc','DIS':'The Walt Disney Company',
+                    'BA':'Boeing Company','UBER':'Uber Technologies','LYFT':'Lyft Inc',
+                    'COIN':'Coinbase Global','HOOD':'Robinhood Markets','PLTR':'Palantir Technologies',
+                    'LLY':'Eli Lilly and Company','NVO':'Novo Nordisk','MRNA':'Moderna Inc',
+                    'PFE':'Pfizer Inc','AMD':'Advanced Micro Devices','INTC':'Intel Corporation',
+                    'QCOM':'Qualcomm Incorporated','AVGO':'Broadcom Inc','CRM':'Salesforce Inc',
+                    'SHOP':'Shopify Inc','SNAP':'Snap Inc','PINS':'Pinterest Inc',
+                    'RDDT':'Reddit Inc','OXY':'Occidental Petroleum','XOM':'Exxon Mobil',
+                    'LMT':'Lockheed Martin','RTX':'Raytheon Technologies','V':'Visa Inc',
+                    'MA':'Mastercard Incorporated','JPM':'JPMorgan Chase','BAC':'Bank of America',
+                }
+                if name == sym and sym in KNOWN_NAMES:
+                    name = KNOWN_NAMES[sym]
 
                 price  = closes[-1]
                 hi52   = max(closes)
