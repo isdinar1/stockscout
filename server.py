@@ -1128,7 +1128,7 @@ def batch_fetch(symbols):
     results = {}
     try:
         tickers = yf.Tickers(' '.join(symbols))
-        hist = tickers.history(period='3mo', auto_adjust=True, progress=False)
+        hist = tickers.history(period='3mo', auto_adjust=True)
         # hist is a MultiIndex DataFrame: (field, symbol)
         closes_all  = hist.get('Close',  None)
         volumes_all = hist.get('Volume', None)
@@ -1787,7 +1787,7 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 t = yf.Ticker('AAPL')
                 lines.append('✅ yf.Ticker created')
-                hist = t.history(period='5d', progress=False)
+                hist = t.history(period='5d')
                 closes = hist['Close'].dropna().tolist() if 'Close' in hist else []
                 lines.append(f'✅ history() returned {len(closes)} closes: {closes[-1] if closes else "none"}')
                 try:
@@ -1945,7 +1945,7 @@ class Handler(BaseHTTPRequestHandler):
 
                 # Use history() as primary — it's reliable on Railway
                 t    = yf.Ticker(sym)
-                hist = t.history(period='3mo', auto_adjust=True, progress=False)
+                hist = t.history(period='3mo', auto_adjust=True)
                 closes  = hist['Close'].dropna().tolist()  if 'Close'  in hist else []
                 volumes = hist['Volume'].dropna().tolist() if 'Volume' in hist else []
 
