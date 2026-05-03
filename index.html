@@ -182,15 +182,15 @@
   </p>
   <button class="btn" id="btn" onclick="scan()">📡 Find Opportunities</button>
   <div style="max-width:560px;margin:16px auto 0;display:flex;gap:8px">
-    <input id="custom-ticker" type="text" placeholder="Request a stock e.g. NVDA, TSLA, AAPL"
+    <input id="stock-search" type="text" placeholder="Search a stock e.g. Apple, NVDA, Tesla"
       style="flex:1;padding:11px 14px;border-radius:10px;border:1px solid var(--border);background:#fff;color:var(--text);font-size:.9rem;outline:none"
-      onkeydown="if(event.key==='Enter') requestStock()"/>
-    <button onclick="requestStock()"
+      onkeydown="if(event.key==='Enter') searchStock()"/>
+    <button onclick="searchStock()"
       style="padding:11px 18px;border-radius:10px;background:var(--accent);color:#fff;border:none;font-weight:700;cursor:pointer;font-size:.9rem;white-space:nowrap">
-      + Request
+      🔍 Search
     </button>
   </div>
-  <div id="request-msg" style="max-width:560px;margin:8px auto 0;font-size:.82rem;color:var(--muted);min-height:18px"></div>
+  <div id="search-result" style="max-width:560px;margin:10px auto 0"></div>
   <div class="congress-banner" style="max-width:560px;margin:12px auto 0">
     📰 <strong>News-first, Congress-confirmed</strong> — we scan financial news and trending stocks first, then cross-reference with House STOCK Act disclosures. A 🏛️ badge means Congress is buying it too.
   </div>
@@ -348,31 +348,47 @@ async function pollProgress() {
   } catch(e) {}
 }
 
-async function requestStock() {
-  const input = document.getElementById('custom-ticker');
-  const msg   = document.getElementById('request-msg');
-  const raw   = input.value.trim().toUpperCase().replace(/[^A-Z,\s]/g, '');
-  const tickers = raw.split(/[\s,]+/).filter(Boolean);
-  if (!tickers.length) { msg.textContent = '⚠️ Enter at least one ticker symbol.'; return; }
-  msg.textContent = '⏳ Submitting request...';
+async function searchStock() {
+  const input  = document.getElementById('stock-search');
+  const result = document.getElementById('search-result');
+  const query  = input.value.trim();
+  if (!query) return;
+  result.innerHTML = `<div style="color:var(--muted);font-size:.85rem;padding:10px 0">⏳ Searching for <b>${query}</b>...</div>`;
   try {
-    const res = await fetch(`${API}/request-stock`, {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({tickers})
-    });
+    const res  = await fetch(`${API}/search-stock?q=${encodeURIComponent(query)}`);
     const data = await res.json();
-    if (data.ok) {
-      msg.style.color = 'var(--green)';
-      msg.textContent = `✅ Requested: ${tickers.join(', ')} — will be included in the next scan!`;
-      input.value = '';
-    } else {
-      msg.style.color = 'var(--red)';
-      msg.textContent = '❌ ' + (data.error || 'Something went wrong.');
-    }
+    if (data.error) { result.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ ${data.error}</div>`; return; }
+    const s = data;
+    const chg = s.chg5 >= 0
+      ? `<span style="color:var(--green)">▲ ${s.chg5.toFixed(2)}% (5d)</span>`
+      : `<span style="color:var(--red)">▼ ${Math.abs(s.chg5).toFixed(2)}% (5d)</span>`;
+    const congress = s.congressConfirmed
+      ? `<span style="background:#ede9fe;color:#6d28d9;padding:3px 8px;border-radius:6px;font-size:.72rem;font-weight:700">🏛️ Congress buying</span>` : '';
+    result.innerHTML = `
+      <div style="background:#fff;border:1px solid var(--border);border-radius:14px;padding:18px 20px;margin-top:4px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px">
+          <div>
+            <div style="font-size:1.4rem;font-weight:900;color:var(--text)">$${s.symbol}</div>
+            <div style="color:var(--muted);font-size:.85rem;margin-top:2px">${s.name}</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:1.3rem;font-weight:800;color:var(--text)">$${s.price}</div>
+            <div style="font-size:.85rem;margin-top:2px">${chg}</div>
+          </div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:12px">
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">${s.capLabel}</span>
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">52w: $${s.lo52?.toFixed(2)} – $${s.hi52?.toFixed(2)}</span>
+          <span style="background:#f3f4f6;padding:4px 10px;border-radius:6px;font-size:.78rem;color:var(--muted)">RSI ${s.rsi?.toFixed(1)}</span>
+          ${congress}
+        </div>
+        ${s.news?.length ? `<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+          <div style="font-size:.75rem;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:8px">Latest News</div>
+          ${s.news.map(h=>`<div style="font-size:.82rem;color:var(--text);padding:4px 0;border-bottom:1px solid #f3f4f6">${h}</div>`).join('')}
+        </div>` : ''}
+      </div>`;
   } catch(e) {
-    msg.style.color = 'var(--red)';
-    msg.textContent = '❌ Request failed. Try again.';
+    result.innerHTML = `<div style="color:var(--red);font-size:.85rem;padding:8px 0">❌ Search failed. Try again.</div>`;
   }
 }
 
