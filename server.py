@@ -2011,10 +2011,22 @@ class Handler(BaseHTTPRequestHandler):
                 elif score >= 40: signal = 'Neutral'
                 else:             signal = 'Bearish Signal'
 
-                # Congress cross-reference
+                # Congress cross-reference — fetch trades if not already cached
+                if _congress_cache is None:
+                    get_congress_trades(10)
                 congress_trades = _congress_cache or {}
-                congress_confirmed = sym in congress_trades and any(tr['type']=='Buy' for tr in congress_trades[sym])
-                congress_members   = [tr['name'] for tr in congress_trades.get(sym,[]) if tr['type']=='Buy'][:3]
+                sym_trades = congress_trades.get(sym, [])
+                buys = [tr for tr in sym_trades if tr.get('type') == 'Buy']
+                congress_confirmed = len(buys) > 0
+                congress_members = []
+                for tr in buys[:5]:
+                    member_name = tr.get('name', 'Unknown')
+                    date_tr     = tr.get('date', '')
+                    amt_tr      = tr.get('amount', '')
+                    detail = member_name
+                    if amt_tr: detail += f' — bought {amt_tr}'
+                    if date_tr: detail += f' on {date_tr}'
+                    congress_members.append(detail)
 
                 # Fetch news + detect relevant themes
                 news_headlines = fetch_stock_news(sym, name)
