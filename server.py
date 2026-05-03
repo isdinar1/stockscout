@@ -19,8 +19,9 @@ import yfinance as yf
 import pdfplumber
 
 # ── Live progress log (streamed to frontend during scan) ─────────────────────
-_progress = []   # list of message strings for the current scan
+_progress  = []   # list of message strings for the current scan
 _scan_done = False
+_scan_lock = threading.Lock()  # prevent concurrent scans
 
 def _log(msg):
     print(msg)
@@ -2022,9 +2023,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif score >= 40: signal = 'Neutral'
                 else:             signal = 'Bearish Signal'
 
-                # Congress cross-reference — fetch trades if not already cached
-                if _congress_cache is None:
-                    get_congress_trades(10)
+                # Congress cross-reference — use cached data only, never trigger a full fetch
+                # (avoid corrupting _progress / scan state)
                 congress_trades = _congress_cache or {}
                 sym_trades = congress_trades.get(sym, [])
                 buys = [tr for tr in sym_trades if tr.get('type') == 'Buy']
@@ -2140,6 +2140,9 @@ class Handler(BaseHTTPRequestHandler):
             if not uid:
                 self._send(401, 'application/json', json.dumps({'error': 'Not logged in'}))
                 return
+            if not _scan_lock.acquire(blocking=False):
+                self._send(429, 'application/json', json.dumps({'error': 'A scan is already running. Please wait.'}))
+                return
             t0 = time.time()
             try:
                 results  = run_research()
@@ -2150,6 +2153,8 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 import traceback; traceback.print_exc()
                 self._send(500, 'application/json', json.dumps({'error': str(e)}))
+            finally:
+                _scan_lock.release()
         else:
             self._send(404, 'application/json', json.dumps({'error': 'not found'}))
 
