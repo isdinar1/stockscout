@@ -89,30 +89,48 @@ def init_db():
         conn.close()
 
 def kv_get(key):
-    conn, pg = _get_conn()
-    ph = _ph(pg)
     try:
-        if pg:
-            row = conn.cursor().execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
-        else:
-            row = conn.execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
-        return row[0] if row else None
-    finally:
-        conn.close()
+        conn, pg = _get_conn()
+        if conn is None:
+            return None
+        ph = _ph(pg)
+        try:
+            if pg:
+                cur = conn.cursor()
+                cur.execute('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                row = cur.execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
+            else:
+                conn.execute('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                row = conn.execute(f'SELECT value FROM kv WHERE key={ph}', (key,)).fetchone()
+            return row[0] if row else None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f'  [kv_get] {e}')
+        return None
 
 def kv_set(key, value):
-    conn, pg = _get_conn()
-    ph = _ph(pg)
     try:
-        if pg:
-            conn.cursor().execute(
-                f'INSERT INTO kv(key,value) VALUES({ph},{ph}) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',
-                (key, value))
-        else:
-            conn.execute('INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)', (key, value))
-        conn.commit()
-    finally:
-        conn.close()
+        # Ensure kv table exists first
+        conn, pg = _get_conn()
+        if conn is None:
+            return
+        ph = _ph(pg)
+        try:
+            if pg:
+                cur = conn.cursor()
+                cur.execute('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                cur.execute(
+                    f'INSERT INTO kv(key,value) VALUES({ph},{ph}) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value',
+                    (key, value))
+            else:
+                conn.execute('CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+                conn.execute('INSERT OR REPLACE INTO kv(key,value) VALUES(?,?)', (key, value))
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f'  [kv_set] {e}')
 
 def _hash(pw):
     salt = secrets.token_hex(16)
