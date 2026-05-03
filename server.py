@@ -1899,19 +1899,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, 'application/json', json.dumps({'error': 'No query provided'}))
                 return
             try:
-                # Resolve symbol
-                sym = query.upper().replace(' ','')
-                t   = yf.Ticker(sym)
-                info = t.info
-                if not info.get('regularMarketPrice') and not info.get('currentPrice'):
+                import re as _re
+                sym  = query.upper().strip()
+                info = {}
+
+                # If it looks like a ticker (1-6 capital letters), try direct lookup first
+                if _re.match(r'^[A-Z]{1,6}$', sym):
+                    t    = yf.Ticker(sym)
+                    info = t.info or {}
+
+                # If no valid price data, search by name
+                if not (info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')):
                     try:
                         hits = yf.Search(query, max_results=1).quotes
                         if hits:
                             sym  = hits[0].get('symbol', sym)
                             t    = yf.Ticker(sym)
-                            info = t.info
-                    except Exception:
-                        pass
+                            info = t.info or {}
+                    except Exception as se:
+                        print(f'  [search] yf.Search failed: {se}')
+
+                if not (info.get('regularMarketPrice') or info.get('currentPrice') or info.get('previousClose')):
+                    self._send(404, 'application/json', json.dumps({'error': f'Could not find "{query}" — try a ticker like AAPL'}))
+                    return
 
                 name  = info.get('longName') or info.get('shortName') or sym
                 mc    = info.get('marketCap', 0) or 0
