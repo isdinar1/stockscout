@@ -2019,13 +2019,17 @@ class Handler(BaseHTTPRequestHandler):
                 buys = [tr for tr in sym_trades if tr.get('type') == 'Buy']
                 congress_confirmed = len(buys) > 0
                 congress_members = []
-                for tr in buys[:5]:
+                seen_members = set()
+                for tr in buys[:8]:
                     member_name = tr.get('name', 'Unknown')
                     date_tr     = tr.get('date', '')
-                    amt_tr      = tr.get('amount', '')
-                    detail = member_name
-                    if amt_tr: detail += f' — bought {amt_tr}'
-                    if date_tr: detail += f' on {date_tr}'
+                    key = member_name
+                    if key in seen_members:
+                        continue
+                    seen_members.add(key)
+                    detail = f'🏛️ {member_name}'
+                    if date_tr:
+                        detail += f' purchased on {date_tr}'
                     congress_members.append(detail)
 
                 # Fetch news + detect relevant themes
@@ -2078,15 +2082,18 @@ class Handler(BaseHTTPRequestHandler):
                     theme_str = ' and '.join(matching_themes[:2])
                     insights.append(f'Current macro themes driving this stock: {theme_str}. These events directly affect {name}\'s sector.')
                 # Congress insight
+                unique_buyers = list({tr.get('name') for tr in buys})
                 if congress_confirmed:
-                    n_buyers = len(buys)
-                    insights.append(f'{n_buyers} member{"s" if n_buyers>1 else ""} of Congress {"have" if n_buyers>1 else "has"} recently purchased {sym} — a strong signal of insider confidence at the government level.')
-                elif sym_trades:
+                    n_buyers = len(unique_buyers)
+                    names_str = ', '.join(unique_buyers[:3])
+                    insights.append(f'{n_buyers} member{"s" if n_buyers>1 else ""} of Congress {"have" if n_buyers>1 else "has"} recently purchased {sym} ({names_str}) — a strong signal of insider confidence at the government level.')
+                else:
                     sells = [tr for tr in sym_trades if tr.get('type') == 'Sell']
                     if sells:
-                        insights.append(f'Congress members have been selling {sym} recently — worth monitoring as a potential bearish signal.')
-                else:
-                    insights.append(f'No recent Congressional trading activity detected for {sym}.')
+                        sell_names = ', '.join(list({tr.get('name') for tr in sells})[:2])
+                        insights.append(f'Congress members ({sell_names}) have been selling {sym} recently — worth monitoring as a potential bearish signal.')
+                    else:
+                        insights.append(f'No recent Congressional trading activity detected for {sym} in the latest disclosures.')
                 # News score insight
                 if news_score >= 10:
                     insights.append(f'News sentiment is strongly positive — multiple recent stories are bullish for {name}.')
